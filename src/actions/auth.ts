@@ -62,8 +62,11 @@ export async function requestPasswordReset(
   if (!email) return { error: "Email is required." };
 
   const supabase = await createClient();
+  // Default Supabase email templates redirect with a PKCE ?code= param,
+  // which /auth/callback handles. (Customized token_hash templates would
+  // point at /auth/confirm instead — both routes exist.)
   const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `${siteUrl()}/auth/confirm?next=/update-password`,
+    redirectTo: `${siteUrl()}/auth/callback?next=/update-password`,
   });
   if (error) return { error: error.message };
 
