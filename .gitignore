@@ -43,3 +43,7 @@ next-env.d.ts
 
 .vercel
 .env*
+
+# personal TV Time export data
+tvtime-export/
+tvtime-import/
