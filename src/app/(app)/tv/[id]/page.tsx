@@ -2,6 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { fetchAllRows } from "@/lib/supabase/fetch-all";
 import { getShow } from "@/lib/tmdb/client";
 import { posterUrl } from "@/lib/tmdb/images";
 import { yearOf } from "@/lib/utils";
@@ -26,7 +27,7 @@ export default async function ShowPage({
     data: { user },
   } = await supabase.auth.getUser();
 
-  const [show, itemResult, epResult] = await Promise.all([
+  const [show, itemResult, epRows] = await Promise.all([
     getShow(showId).catch(() => null),
     supabase
       .from("library_items")
@@ -35,23 +36,27 @@ export default async function ShowPage({
       .eq("tmdb_id", showId)
       .eq("media_type", "tv")
       .maybeSingle(),
-    supabase
-      .from("episode_watches")
-      .select("season_number")
-      .eq("user_id", user!.id)
-      .eq("tmdb_show_id", showId),
+    fetchAllRows<{ season_number: number }>((from, to) =>
+      supabase
+        .from("episode_watches")
+        .select("season_number")
+        .eq("user_id", user!.id)
+        .eq("tmdb_show_id", showId)
+        .order("id")
+        .range(from, to)
+    ),
   ]);
   if (!show) notFound();
 
   // Watched count per season
   const watchedPerSeason = new Map<number, number>();
-  for (const row of epResult.data ?? []) {
+  for (const row of epRows) {
     watchedPerSeason.set(
       row.season_number,
       (watchedPerSeason.get(row.season_number) ?? 0) + 1
     );
   }
-  const totalWatched = (epResult.data ?? []).length;
+  const totalWatched = epRows.length;
 
   const snapshot: MediaSnapshot = {
     title: show.name,

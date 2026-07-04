@@ -189,6 +189,24 @@ TanStack Query can be added surgically later if client interactivity grows.
 | Recommendations | TMDB `/recommendations` filtered against library |
 | Mobile app | Expo against the same Supabase project (RLS already mobile-ready); or responsive PWA |
 
+## Import / Export
+
+Settings offers data portability (`src/lib/import/`, `/api/import`, `/api/export`):
+
+- **Parsing happens client-side** — the uploaded zip (fflate) or JSON is parsed in the
+  browser into a normalized `ImportItem[]` (`types.ts`), so there are no upload size
+  limits or server parse timeouts. `detect.ts` sniffs the source from filenames.
+- **Sources**: Trakt export zip (best — native TMDB ids on everything), TV Time GDPR
+  zip (TVDB ids for shows, name+year search for movies), tracker backup JSON
+  (round-trips `/api/export`). Liberator pending a sample file.
+- **Import executes in chunks**: the client POSTs batches to `/api/import` (auth via
+  session cookie, RLS enforced), which resolves each item against TMDB
+  (id → /find → search fallback), fetches snapshot data and per-season episode
+  runtimes, and upserts with `on conflict do nothing`. Modes: merge (default) or
+  replace (wipes the user's rows first via `op: "reset"`).
+- **Export** (`/api/export`) downloads the full library + watch history as
+  `tracker-backup@1` JSON — itself an accepted import source, so it doubles as backup.
+
 ## Build Phases
 
 1. Scaffold — Next.js + TS + Tailwind, Supabase project, env, base layout & dark theme

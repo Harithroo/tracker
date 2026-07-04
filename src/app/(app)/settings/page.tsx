@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
 import { logout, updatePassword, updateUsername } from "@/actions/auth";
 import { AuthForm } from "@/components/auth/AuthForm";
+import { ImportExport } from "@/components/settings/ImportExport";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -56,6 +57,8 @@ export default async function SettingsPage() {
           pendingLabel="Updating…"
         />
       </section>
+
+      <ImportExport />
 
       <section className="rounded-2xl border border-border bg-surface p-6">
         <form action={logout}>

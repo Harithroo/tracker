@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
+import { fetchAllRows } from "@/lib/supabase/fetch-all";
 import { cn } from "@/lib/utils";
 import { statusLabel, type LibraryItem, type WatchStatus } from "@/types/library";
 import { PosterCard } from "@/components/media/PosterCard";
@@ -38,33 +39,35 @@ export default async function LibraryPage({
   } = await supabase.auth.getUser();
   const userId = user!.id;
 
-  let query = supabase
-    .from("library_items")
-    .select("*")
-    .eq("user_id", userId)
-    .order("updated_at", { ascending: false });
-
-  if (filter === "favorites") {
-    query = query.eq("favorite", true);
-  } else if (STATUS_VALUES.includes(filter as WatchStatus)) {
-    query = query.eq("status", filter);
-  }
-
-  const { data } = await query;
-  const items = (data ?? []) as LibraryItem[];
+  const items = await fetchAllRows<LibraryItem>((from, to) => {
+    let query = supabase
+      .from("library_items")
+      .select("*")
+      .eq("user_id", userId);
+    if (filter === "favorites") {
+      query = query.eq("favorite", true);
+    } else if (STATUS_VALUES.includes(filter as WatchStatus)) {
+      query = query.eq("status", filter);
+    }
+    return query
+      .order("updated_at", { ascending: false })
+      .order("id")
+      .range(from, to);
+  });
 
   // Episode progress for TV items
-  const tvIds = items
-    .filter((i) => i.media_type === "tv")
-    .map((i) => i.tmdb_id);
+  const hasTv = items.some((i) => i.media_type === "tv");
   const watchedCounts = new Map<number, number>();
-  if (tvIds.length > 0) {
-    const { data: epRows } = await supabase
-      .from("episode_watches")
-      .select("tmdb_show_id")
-      .eq("user_id", userId)
-      .in("tmdb_show_id", tvIds);
-    for (const row of epRows ?? []) {
+  if (hasTv) {
+    const epRows = await fetchAllRows<{ tmdb_show_id: number }>((from, to) =>
+      supabase
+        .from("episode_watches")
+        .select("tmdb_show_id")
+        .eq("user_id", userId)
+        .order("id")
+        .range(from, to)
+    );
+    for (const row of epRows) {
       watchedCounts.set(
         row.tmdb_show_id,
         (watchedCounts.get(row.tmdb_show_id) ?? 0) + 1

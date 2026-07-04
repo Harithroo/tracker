@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
+import { fetchAllRows } from "@/lib/supabase/fetch-all";
 import { genreName } from "@/lib/tmdb/genres";
 import { formatWatchTime } from "@/lib/utils";
 
@@ -30,18 +31,24 @@ export default async function StatsPage() {
   } = await supabase.auth.getUser();
   const userId = user!.id;
 
-  const [itemsResult, episodesResult] = await Promise.all([
-    supabase
-      .from("library_items")
-      .select("media_type, status, rating, runtime_minutes, genre_ids, finished_at")
-      .eq("user_id", userId),
-    supabase
-      .from("episode_watches")
-      .select("runtime_minutes, watched_at")
-      .eq("user_id", userId),
+  const [items, episodes] = await Promise.all([
+    fetchAllRows<ItemRow>((from, to) =>
+      supabase
+        .from("library_items")
+        .select("media_type, status, rating, runtime_minutes, genre_ids, finished_at, id")
+        .eq("user_id", userId)
+        .order("id")
+        .range(from, to)
+    ),
+    fetchAllRows<EpisodeRow>((from, to) =>
+      supabase
+        .from("episode_watches")
+        .select("runtime_minutes, watched_at, id")
+        .eq("user_id", userId)
+        .order("id")
+        .range(from, to)
+    ),
   ]);
-  const items = (itemsResult.data ?? []) as ItemRow[];
-  const episodes = (episodesResult.data ?? []) as EpisodeRow[];
 
   // Headline numbers
   const completedMovies = items.filter(

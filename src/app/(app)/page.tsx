@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
+import { fetchAllRows } from "@/lib/supabase/fetch-all";
 import { getShow, getTrending } from "@/lib/tmdb/client";
 import { episodeKey, nextEpisode } from "@/lib/progress";
 import { epCode, yearOf } from "@/lib/utils";
@@ -28,15 +29,23 @@ export default async function HomePage() {
   const tvItems = watching.filter((i) => i.media_type === "tv");
   const watchedByShow = new Map<number, Set<string>>();
   if (tvItems.length > 0) {
-    const { data: epRows } = await supabase
-      .from("episode_watches")
-      .select("tmdb_show_id, season_number, episode_number")
-      .eq("user_id", userId)
-      .in(
-        "tmdb_show_id",
-        tvItems.map((i) => i.tmdb_id)
-      );
-    for (const row of epRows ?? []) {
+    const epRows = await fetchAllRows<{
+      tmdb_show_id: number;
+      season_number: number;
+      episode_number: number;
+    }>((from, to) =>
+      supabase
+        .from("episode_watches")
+        .select("tmdb_show_id, season_number, episode_number")
+        .eq("user_id", userId)
+        .in(
+          "tmdb_show_id",
+          tvItems.map((i) => i.tmdb_id)
+        )
+        .order("id")
+        .range(from, to)
+    );
+    for (const row of epRows) {
       const set = watchedByShow.get(row.tmdb_show_id) ?? new Set<string>();
       set.add(episodeKey(row.season_number, row.episode_number));
       watchedByShow.set(row.tmdb_show_id, set);
