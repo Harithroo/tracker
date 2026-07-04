@@ -1,3 +1,5 @@
+import { Carousel } from "./Carousel";
+
 export function MediaRow({
   title,
   children,
@@ -8,9 +10,7 @@ export function MediaRow({
   return (
     <section>
       <h2 className="mb-3 text-lg font-semibold">{title}</h2>
-      <div className="no-scrollbar -mx-4 flex gap-3 overflow-x-auto px-4 pb-1">
-        {children}
-      </div>
+      <Carousel>{children}</Carousel>
     </section>
   );
 }

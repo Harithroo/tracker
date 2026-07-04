@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { searchMulti } from "@/lib/tmdb/client";
 import { cn, yearOf } from "@/lib/utils";
 import type { TmdbSearchResult } from "@/lib/tmdb/types";
+import type { WatchStatus } from "@/types/library";
 import { PosterCard } from "@/components/media/PosterCard";
 
 export const metadata: Metadata = { title: "Search" };
@@ -37,8 +38,8 @@ export default async function SearchPage({
     }
   }
 
-  // Mark results already in the user's library
-  const inLibrary = new Set<string>();
+  // Library status for indicators + quick menus
+  const libraryStatus = new Map<string, WatchStatus>();
   if (results.length > 0) {
     const supabase = await createClient();
     const {
@@ -46,14 +47,14 @@ export default async function SearchPage({
     } = await supabase.auth.getUser();
     const { data: rows } = await supabase
       .from("library_items")
-      .select("tmdb_id, media_type")
+      .select("tmdb_id, media_type, status")
       .eq("user_id", user!.id)
       .in(
         "tmdb_id",
         results.map((r) => r.id)
       );
     for (const row of rows ?? []) {
-      inLibrary.add(`${row.media_type}:${row.tmdb_id}`);
+      libraryStatus.set(`${row.media_type}:${row.tmdb_id}`, row.status);
     }
   }
 
@@ -123,13 +124,12 @@ export default async function SearchPage({
               ]
                 .filter(Boolean)
                 .join(" · ")}
-              badge={
-                inLibrary.has(`${item.media_type}:${item.id}`)
-                  ? "✓ In library"
-                  : item.vote_average
-                    ? `★ ${item.vote_average.toFixed(1)}`
-                    : null
-              }
+              badge={item.vote_average ? `★ ${item.vote_average.toFixed(1)}` : null}
+              quick={{
+                tmdbId: item.id,
+                mediaType: item.media_type as "movie" | "tv",
+                status: libraryStatus.get(`${item.media_type}:${item.id}`) ?? null,
+              }}
             />
           );
         })}

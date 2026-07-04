@@ -4,7 +4,7 @@ import { fetchAllRows } from "@/lib/supabase/fetch-all";
 import { getShow, getTrending } from "@/lib/tmdb/client";
 import { episodeKey, nextEpisode } from "@/lib/progress";
 import { epCode, yearOf } from "@/lib/utils";
-import type { LibraryItem } from "@/types/library";
+import type { LibraryItem, WatchStatus } from "@/types/library";
 import type { TmdbSearchResult } from "@/lib/tmdb/types";
 import { PosterCard } from "@/components/media/PosterCard";
 import { MediaRow, RowItem } from "@/components/media/MediaRow";
@@ -22,45 +22,57 @@ export default async function HomePage() {
     .eq("user_id", userId)
     .eq("status", "watching")
     .order("updated_at", { ascending: false })
-    .limit(12);
-  const watching = (watchingData ?? []) as LibraryItem[];
+    .limit(100);
+  const allWatching = (watchingData ?? []) as LibraryItem[];
 
-  // Episode progress + "up next" for the shows currently being watched
-  const tvItems = watching.filter((i) => i.media_type === "tv");
-  const watchedByShow = new Map<number, Set<string>>();
-  if (tvItems.length > 0) {
-    const epRows = await fetchAllRows<{
-      tmdb_show_id: number;
-      season_number: number;
-      episode_number: number;
-    }>((from, to) =>
-      supabase
-        .from("episode_watches")
-        .select("tmdb_show_id, season_number, episode_number")
-        .eq("user_id", userId)
-        .in(
-          "tmdb_show_id",
-          tvItems.map((i) => i.tmdb_id)
-        )
-        .order("id")
-        .range(from, to)
-    );
-    for (const row of epRows) {
-      const set = watchedByShow.get(row.tmdb_show_id) ?? new Set<string>();
-      set.add(episodeKey(row.season_number, row.episode_number));
-      watchedByShow.set(row.tmdb_show_id, set);
+  // Rank by actual watch recency (aggregated view), and only surface shows
+  // touched in the last two months — stale ones stay in the library.
+  const tvIds = allWatching.filter((i) => i.media_type === "tv").map((i) => i.tmdb_id);
+  const watchedCounts = new Map<number, number>();
+  const lastWatched = new Map<number, string>();
+  if (tvIds.length > 0) {
+    const { data: counts } = await supabase
+      .from("episode_watch_counts")
+      .select("tmdb_show_id, watched_count, last_watched_at")
+      .eq("user_id", userId)
+      .in("tmdb_show_id", tvIds);
+    for (const row of counts ?? []) {
+      watchedCounts.set(row.tmdb_show_id, row.watched_count);
+      if (row.last_watched_at) lastWatched.set(row.tmdb_show_id, row.last_watched_at);
     }
   }
+
+  const RECENT_DAYS = 60;
+  const cutoff = new Date(Date.now() - RECENT_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const byRecency = [...allWatching].sort((a, b) => {
+    const la = lastWatched.get(a.tmdb_id) ?? "";
+    const lb = lastWatched.get(b.tmdb_id) ?? "";
+    return lb.localeCompare(la);
+  });
+  const recent = byRecency.filter((i) => (lastWatched.get(i.tmdb_id) ?? "") >= cutoff);
+  const watching = (recent.length > 0 ? recent : byRecency).slice(0, 12);
+  const tvItems = watching.filter((i) => i.media_type === "tv");
 
   const upNext = new Map<number, string>();
   await Promise.all(
     tvItems.slice(0, 8).map(async (item) => {
       try {
-        const show = await getShow(item.tmdb_id);
-        const next = nextEpisode(
-          show.seasons,
-          watchedByShow.get(item.tmdb_id) ?? new Set()
+        const [show, epRows] = await Promise.all([
+          getShow(item.tmdb_id),
+          fetchAllRows<{ season_number: number; episode_number: number }>((from, to) =>
+            supabase
+              .from("episode_watches")
+              .select("season_number, episode_number")
+              .eq("user_id", userId)
+              .eq("tmdb_show_id", item.tmdb_id)
+              .order("id")
+              .range(from, to)
+          ),
+        ]);
+        const watched = new Set(
+          epRows.map((row) => episodeKey(row.season_number, row.episode_number))
         );
+        const next = nextEpisode(show.seasons, watched);
         if (next) upNext.set(item.tmdb_id, epCode(next.season, next.episode));
       } catch {
         // TMDB unavailable — skip the badge, keep the page working
@@ -80,6 +92,20 @@ export default async function HomePage() {
     tmdbDown = true;
   }
 
+  // Library status for the trending cards' indicators/quick menus
+  const libraryStatus = new Map<string, WatchStatus>();
+  const trendingIds = [...trendingTv, ...trendingMovies].map((t) => t.id);
+  if (trendingIds.length > 0) {
+    const { data: rows } = await supabase
+      .from("library_items")
+      .select("tmdb_id, media_type, status")
+      .eq("user_id", userId)
+      .in("tmdb_id", trendingIds);
+    for (const row of rows ?? []) {
+      libraryStatus.set(`${row.media_type}:${row.tmdb_id}`, row.status);
+    }
+  }
+
   return (
     <div className="space-y-10">
       <section>
@@ -94,7 +120,7 @@ export default async function HomePage() {
         ) : (
           <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-6">
             {watching.map((item) => {
-              const watchedCount = watchedByShow.get(item.tmdb_id)?.size ?? 0;
+              const watchedCount = watchedCounts.get(item.tmdb_id) ?? 0;
               const progress =
                 item.media_type === "tv" && item.total_episodes
                   ? (watchedCount / item.total_episodes) * 100
@@ -112,6 +138,11 @@ export default async function HomePage() {
                   }
                   badge={upNext.get(item.tmdb_id) ?? null}
                   progress={progress}
+                  quick={{
+                    tmdbId: item.tmdb_id,
+                    mediaType: item.media_type,
+                    status: item.status,
+                  }}
                 />
               );
             })}
@@ -134,6 +165,11 @@ export default async function HomePage() {
                   posterPath={item.poster_path}
                   title={item.name ?? ""}
                   subtitle={String(yearOf(item.first_air_date) ?? "")}
+                  quick={{
+                    tmdbId: item.id,
+                    mediaType: "tv",
+                    status: libraryStatus.get(`tv:${item.id}`) ?? null,
+                  }}
                 />
               </RowItem>
             ))}
@@ -147,6 +183,11 @@ export default async function HomePage() {
                   posterPath={item.poster_path}
                   title={item.title ?? ""}
                   subtitle={String(yearOf(item.release_date) ?? "")}
+                  quick={{
+                    tmdbId: item.id,
+                    mediaType: "movie",
+                    status: libraryStatus.get(`movie:${item.id}`) ?? null,
+                  }}
                 />
               </RowItem>
             ))}

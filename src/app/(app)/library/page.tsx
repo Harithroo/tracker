@@ -2,13 +2,19 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
 import { fetchAllRows } from "@/lib/supabase/fetch-all";
-import { cn } from "@/lib/utils";
-import { statusLabel, type LibraryItem, type WatchStatus } from "@/types/library";
+import { statusLabel, type MediaType, type WatchStatus } from "@/types/library";
 import { PosterCard } from "@/components/media/PosterCard";
+import { TabLink } from "@/components/ui/TabLink";
 
 export const metadata: Metadata = { title: "Library" };
 
-const TABS: { value: string; label: string }[] = [
+const TYPE_TABS: { value: string; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "tv", label: "Shows" },
+  { value: "movie", label: "Movies" },
+];
+
+const STATUS_TABS: { value: string; label: string }[] = [
   { value: "all", label: "All" },
   { value: "watching", label: "Watching" },
   { value: "completed", label: "Completed" },
@@ -26,12 +32,32 @@ const STATUS_VALUES: WatchStatus[] = [
   "dropped",
 ];
 
+interface LibraryRow {
+  id: string;
+  tmdb_id: number;
+  media_type: MediaType;
+  status: WatchStatus;
+  rating: number | null;
+  title: string;
+  poster_path: string | null;
+  release_year: number | null;
+  total_episodes: number | null;
+}
+
+function tabHref(type: string, filter: string): string {
+  const params = new URLSearchParams();
+  if (type !== "all") params.set("type", type);
+  if (filter !== "all") params.set("filter", filter);
+  const qs = params.toString();
+  return qs ? `/library?${qs}` : "/library";
+}
+
 export default async function LibraryPage({
   searchParams,
 }: {
-  searchParams: Promise<{ filter?: string }>;
+  searchParams: Promise<{ type?: string; filter?: string }>;
 }) {
-  const { filter = "all" } = await searchParams;
+  const { type = "all", filter = "all" } = await searchParams;
 
   const supabase = await createClient();
   const {
@@ -39,60 +65,66 @@ export default async function LibraryPage({
   } = await supabase.auth.getUser();
   const userId = user!.id;
 
-  const items = await fetchAllRows<LibraryItem>((from, to) => {
+  const itemsPromise = fetchAllRows<LibraryRow>((from, to) => {
     let query = supabase
       .from("library_items")
-      .select("*")
+      .select(
+        "id, tmdb_id, media_type, status, rating, title, poster_path, release_year, total_episodes"
+      )
       .eq("user_id", userId);
-    if (filter === "favorites") {
-      query = query.eq("favorite", true);
-    } else if (STATUS_VALUES.includes(filter as WatchStatus)) {
-      query = query.eq("status", filter);
-    }
+    if (type === "movie" || type === "tv") query = query.eq("media_type", type);
+    if (filter === "favorites") query = query.eq("favorite", true);
+    else if (STATUS_VALUES.includes(filter as WatchStatus)) query = query.eq("status", filter);
     return query
       .order("updated_at", { ascending: false })
       .order("id")
       .range(from, to);
   });
 
-  // Episode progress for TV items
-  const hasTv = items.some((i) => i.media_type === "tv");
-  const watchedCounts = new Map<number, number>();
-  if (hasTv) {
-    const epRows = await fetchAllRows<{ tmdb_show_id: number }>((from, to) =>
-      supabase
-        .from("episode_watches")
-        .select("tmdb_show_id")
-        .eq("user_id", userId)
-        .order("id")
-        .range(from, to)
-    );
-    for (const row of epRows) {
-      watchedCounts.set(
-        row.tmdb_show_id,
-        (watchedCounts.get(row.tmdb_show_id) ?? 0) + 1
-      );
-    }
-  }
+  // One aggregated row per show instead of paging through every episode watch
+  const countsPromise =
+    type === "movie"
+      ? Promise.resolve([])
+      : supabase
+          .from("episode_watch_counts")
+          .select("tmdb_show_id, watched_count")
+          .eq("user_id", userId)
+          .then(({ data }) => data ?? []);
+
+  const [items, counts] = await Promise.all([itemsPromise, countsPromise]);
+  const watchedCounts = new Map(counts.map((c) => [c.tmdb_show_id, c.watched_count]));
 
   return (
     <div>
       <h1 className="mb-4 text-2xl font-bold tracking-tight">Library</h1>
 
-      <div className="no-scrollbar -mx-4 mb-6 flex gap-2 overflow-x-auto px-4">
-        {TABS.map((tab) => (
-          <Link
+      <div className="mb-3 flex gap-2">
+        {TYPE_TABS.map((tab) => (
+          <TabLink
             key={tab.value}
-            href={tab.value === "all" ? "/library" : `/library?filter=${tab.value}`}
-            className={cn(
-              "shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
-              filter === tab.value
-                ? "bg-accent text-white"
-                : "bg-surface text-muted hover:text-foreground"
-            )}
+            href={tabHref(tab.value, filter)}
+            active={type === tab.value}
+            className="rounded-lg border px-3.5 py-1.5 text-sm font-semibold transition-colors"
+            activeClassName="border-accent bg-accent/15 text-accent"
+            inactiveClassName="border-border bg-surface text-muted hover:text-foreground"
           >
             {tab.label}
-          </Link>
+          </TabLink>
+        ))}
+      </div>
+
+      <div className="no-scrollbar -mx-4 mb-6 flex gap-2 overflow-x-auto px-4">
+        {STATUS_TABS.map((tab) => (
+          <TabLink
+            key={tab.value}
+            href={tabHref(type, tab.value)}
+            active={filter === tab.value}
+            className="shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
+            activeClassName="bg-accent text-white"
+            inactiveClassName="bg-surface text-muted hover:text-foreground"
+          >
+            {tab.label}
+          </TabLink>
         ))}
       </div>
 
@@ -104,37 +136,47 @@ export default async function LibraryPage({
           </Link>
         </div>
       ) : (
-        <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
-          {items.map((item) => {
-            const watched = watchedCounts.get(item.tmdb_id) ?? 0;
-            const progress =
-              item.media_type === "tv" &&
-              item.total_episodes &&
-              item.status !== "plan_to_watch"
-                ? (watched / item.total_episodes) * 100
-                : undefined;
-            return (
-              <PosterCard
-                key={item.id}
-                href={`/${item.media_type}/${item.tmdb_id}`}
-                posterPath={item.poster_path}
-                title={item.title}
-                subtitle={[
-                  item.release_year,
-                  filter === "all" || filter === "favorites"
-                    ? statusLabel(item.status, item.media_type)
-                    : item.media_type === "tv"
-                      ? "TV"
-                      : "Movie",
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-                badge={item.rating ? `★ ${item.rating}` : null}
-                progress={progress}
-              />
-            );
-          })}
-        </div>
+        <>
+          <p className="mb-3 text-sm text-muted">{items.length.toLocaleString()} items</p>
+          <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
+            {items.map((item) => {
+              const watched = watchedCounts.get(item.tmdb_id) ?? 0;
+              const progress =
+                item.media_type === "tv" &&
+                item.total_episodes &&
+                item.status !== "plan_to_watch"
+                  ? (watched / item.total_episodes) * 100
+                  : undefined;
+              return (
+                <PosterCard
+                  key={item.id}
+                  href={`/${item.media_type}/${item.tmdb_id}`}
+                  posterPath={item.poster_path}
+                  title={item.title}
+                  subtitle={[
+                    item.release_year,
+                    filter === "all" || filter === "favorites"
+                      ? statusLabel(item.status, item.media_type)
+                      : type === "all"
+                        ? item.media_type === "tv"
+                          ? "TV"
+                          : "Movie"
+                        : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                  badge={item.rating ? `★ ${item.rating}` : null}
+                  progress={progress}
+                  quick={{
+                    tmdbId: item.tmdb_id,
+                    mediaType: item.media_type,
+                    status: item.status,
+                  }}
+                />
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );

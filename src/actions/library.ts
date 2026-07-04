@@ -2,6 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { getMovie, getShow } from "@/lib/tmdb/client";
+import { yearOf } from "@/lib/utils";
 import type { MediaSnapshot, MediaType, WatchStatus } from "@/types/library";
 
 interface LibraryPatch {
@@ -78,6 +80,46 @@ export async function upsertLibraryItem(input: {
   }
 
   revalidatePath("/", "layout");
+}
+
+/**
+ * Card quick-menu action: set a status (or remove) without the caller needing
+ * snapshot data — the TMDB snapshot is fetched server-side when inserting.
+ */
+export async function quickSetStatus(
+  tmdbId: number,
+  mediaType: MediaType,
+  status: WatchStatus | "remove"
+) {
+  if (status === "remove") {
+    await removeLibraryItem(tmdbId, mediaType);
+    return;
+  }
+
+  let snapshot: MediaSnapshot;
+  if (mediaType === "movie") {
+    const movie = await getMovie(tmdbId);
+    snapshot = {
+      title: movie.title,
+      posterPath: movie.poster_path,
+      releaseYear: yearOf(movie.release_date),
+      runtimeMinutes: movie.runtime,
+      genreIds: movie.genres.map((g) => g.id),
+      totalEpisodes: null,
+    };
+  } else {
+    const show = await getShow(tmdbId);
+    snapshot = {
+      title: show.name,
+      posterPath: show.poster_path,
+      releaseYear: yearOf(show.first_air_date),
+      runtimeMinutes: show.episode_run_time?.[0] ?? null,
+      genreIds: show.genres.map((g) => g.id),
+      totalEpisodes: show.number_of_episodes,
+    };
+  }
+
+  await upsertLibraryItem({ tmdbId, mediaType, snapshot, patch: { status } });
 }
 
 export async function removeLibraryItem(tmdbId: number, mediaType: MediaType) {
