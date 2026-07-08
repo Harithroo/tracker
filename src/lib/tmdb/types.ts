@@ -78,6 +78,14 @@ export interface SeasonSummary {
   air_date: string | null;
 }
 
+export interface EpisodeToAir {
+  id: number;
+  season_number: number;
+  episode_number: number;
+  name: string;
+  air_date: string | null;
+}
+
 export interface ShowDetails extends WithAppends {
   id: number;
   name: string;
@@ -94,6 +102,8 @@ export interface ShowDetails extends WithAppends {
   vote_average: number;
   status: string;
   seasons: SeasonSummary[];
+  last_episode_to_air: EpisodeToAir | null;
+  next_episode_to_air: EpisodeToAir | null;
 }
 
 export interface Episode {

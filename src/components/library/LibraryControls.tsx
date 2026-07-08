@@ -53,37 +53,37 @@ export function LibraryControls({
     );
   }
 
-  function handleStatusChange(value: string) {
-    if (value === "__remove") {
-      setLocal(null);
-      setNotesDraft("");
-      setShowNotes(false);
-      startTransition(() => removeLibraryItem(tmdbId, mediaType));
-      return;
-    }
-    if (value) apply({ status: value as WatchStatus });
+  function handleRemove() {
+    setLocal(null);
+    setNotesDraft("");
+    setShowNotes(false);
+    startTransition(() => removeLibraryItem(tmdbId, mediaType));
   }
 
   return (
     <div className="space-y-3 rounded-xl border border-border bg-surface p-4">
       <div className="flex flex-wrap items-center gap-2">
-        <select
-          value={local?.status ?? ""}
-          onChange={(e) => handleStatusChange(e.target.value)}
-          disabled={pending}
-          className={cn(
-            "rounded-lg border border-border px-3 py-2 text-sm font-medium outline-none transition-colors focus:border-accent",
-            local ? "bg-accent/15 text-accent" : "bg-surface-2"
-          )}
-        >
-          {!local && <option value="">+ Add to library</option>}
-          {statuses.map((s) => (
-            <option key={s} value={s}>
-              {statusLabel(s, mediaType)}
-            </option>
-          ))}
-          {local && <option value="__remove">Remove from library</option>}
-        </select>
+        {statuses.map((s) => (
+          <button
+            key={s}
+            type="button"
+            disabled={pending}
+            onClick={() => local?.status !== s && apply({ status: s })}
+            className={cn(
+              "rounded-lg border px-3 py-2 text-sm font-medium transition-colors",
+              local?.status === s
+                ? "border-accent bg-accent/15 text-accent"
+                : "border-border bg-surface-2 text-muted hover:text-foreground"
+            )}
+          >
+            {statusLabel(s, mediaType)}
+          </button>
+        ))}
+        {mediaType === "tv" && local?.status === "completed" && (
+          <span className="rounded-lg border border-emerald-800 bg-emerald-950/40 px-3 py-2 text-sm font-medium text-emerald-400">
+            ✓ Completed
+          </span>
+        )}
 
         <button
           type="button"
@@ -136,6 +136,20 @@ export function LibraryControls({
           </span>
         )}
       </div>
+
+      {local && (
+        <div className="flex items-center gap-3 border-t border-border pt-3 text-sm">
+          <span className="text-muted">✓ In library</span>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={handleRemove}
+            className="text-red-400 transition-colors hover:text-red-300"
+          >
+            Remove from library
+          </button>
+        </div>
+      )}
 
       {showNotes && (
         <div className="space-y-2">

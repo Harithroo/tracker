@@ -6,7 +6,7 @@ import { fetchAllRows } from "@/lib/supabase/fetch-all";
 import { getShow } from "@/lib/tmdb/client";
 import { posterUrl } from "@/lib/tmdb/images";
 import { yearOf } from "@/lib/utils";
-import type { MediaSnapshot } from "@/types/library";
+import type { MediaSnapshot, WatchStatus } from "@/types/library";
 import { DetailsHero, pickTrailer } from "@/components/media/DetailsHero";
 import { CastRow } from "@/components/media/CastRow";
 import { MediaRow, RowItem } from "@/components/media/MediaRow";
@@ -71,6 +71,21 @@ export default async function ShowPage({
     .filter((s) => s.episode_count > 0)
     .sort((a, b) => a.season_number - b.season_number);
   const recommendations = show.recommendations?.results?.slice(0, 12) ?? [];
+
+  // Library status for the recommendation cards' indicators/quick menus
+  const recStatus = new Map<number, WatchStatus>();
+  if (recommendations.length > 0) {
+    const { data: rows } = await supabase
+      .from("library_items")
+      .select("tmdb_id, status")
+      .eq("user_id", user!.id)
+      .eq("media_type", "tv")
+      .in(
+        "tmdb_id",
+        recommendations.map((r) => r.id)
+      );
+    for (const row of rows ?? []) recStatus.set(row.tmdb_id, row.status);
+  }
 
   return (
     <div className="space-y-10">
@@ -164,6 +179,11 @@ export default async function ShowPage({
                 posterPath={rec.poster_path}
                 title={rec.name ?? ""}
                 subtitle={String(yearOf(rec.first_air_date) ?? "")}
+                quick={{
+                  tmdbId: rec.id,
+                  mediaType: "tv",
+                  status: recStatus.get(rec.id) ?? null,
+                }}
               />
             </RowItem>
           ))}

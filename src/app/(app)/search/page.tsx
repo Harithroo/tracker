@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
-import { searchMulti } from "@/lib/tmdb/client";
+import { getTrending, searchMulti } from "@/lib/tmdb/client";
 import { cn, yearOf } from "@/lib/utils";
 import type { TmdbSearchResult } from "@/lib/tmdb/types";
 import type { WatchStatus } from "@/types/library";
@@ -35,6 +35,25 @@ export default async function SearchPage({
       );
     } catch (e) {
       error = e instanceof Error ? e.message : "Search failed.";
+    }
+  } else {
+    // Empty search — surface this week's top titles instead of a blank page
+    try {
+      const [tv, movies] = await Promise.all([
+        getTrending("tv").then((r) => r.results),
+        getTrending("movie").then((r) => r.results),
+      ]);
+      // Interleave shows and movies so neither dominates the grid
+      const interleaved: TmdbSearchResult[] = [];
+      for (let i = 0; i < Math.max(tv.length, movies.length); i++) {
+        if (tv[i]) interleaved.push({ ...tv[i], media_type: "tv" });
+        if (movies[i]) interleaved.push({ ...movies[i], media_type: "movie" });
+      }
+      results = interleaved
+        .filter((r) => type === "all" || r.media_type === type)
+        .slice(0, 18);
+    } catch (e) {
+      error = e instanceof Error ? e.message : "Couldn't load trending titles.";
     }
   }
 
@@ -72,12 +91,15 @@ export default async function SearchPage({
         {type !== "all" && <input type="hidden" name="type" value={type} />}
       </form>
 
-      {query && (
+      {(query || results.length > 0) && (
         <div className="mb-6 flex gap-2">
           {TYPE_TABS.map((tab) => (
             <Link
               key={tab.value}
-              href={`/search?q=${encodeURIComponent(query)}${tab.value === "all" ? "" : `&type=${tab.value}`}`}
+              href={`/search?${new URLSearchParams({
+                ...(query && { q: query }),
+                ...(tab.value !== "all" && { type: tab.value }),
+              })}`}
               className={cn(
                 "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
                 type === tab.value
@@ -97,10 +119,8 @@ export default async function SearchPage({
         </div>
       )}
 
-      {!query && !error && (
-        <p className="py-16 text-center text-sm text-muted">
-          Search TMDB for movies and TV shows to add to your library.
-        </p>
+      {!query && !error && results.length > 0 && (
+        <h2 className="mb-3 text-lg font-semibold">Trending This Week</h2>
       )}
 
       {query && !error && results.length === 0 && (

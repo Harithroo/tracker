@@ -56,7 +56,7 @@ export function DetailsHero({
 
       <div className="relative mx-auto flex max-w-6xl flex-col gap-6 px-4 pb-8 pt-10 sm:flex-row md:pt-16">
         {poster && (
-          <div className="relative hidden aspect-[2/3] w-44 shrink-0 overflow-hidden rounded-xl border border-border shadow-2xl sm:block md:w-56">
+          <div className="relative hidden aspect-[2/3] w-44 shrink-0 self-end overflow-hidden rounded-xl border border-border shadow-2xl sm:block md:w-56">
             <Image src={poster} alt={title} fill sizes="224px" className="object-cover" />
           </div>
         )}

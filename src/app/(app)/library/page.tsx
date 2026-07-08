@@ -20,7 +20,6 @@ const STATUS_TABS: { value: string; label: string }[] = [
   { value: "completed", label: "Completed" },
   { value: "plan_to_watch", label: "Plan to Watch" },
   { value: "on_hold", label: "On Hold" },
-  { value: "dropped", label: "Dropped" },
   { value: "favorites", label: "♥ Favorites" },
 ];
 
@@ -29,7 +28,6 @@ const STATUS_VALUES: WatchStatus[] = [
   "completed",
   "plan_to_watch",
   "on_hold",
-  "dropped",
 ];
 
 interface LibraryRow {
@@ -44,10 +42,18 @@ interface LibraryRow {
   total_episodes: number | null;
 }
 
-function tabHref(type: string, filter: string): string {
+const SORT_TABS: { value: string; label: string }[] = [
+  { value: "recent", label: "Recent" },
+  { value: "title", label: "Title" },
+  { value: "year", label: "Year" },
+  { value: "rating", label: "Rating" },
+];
+
+function tabHref(type: string, filter: string, sort: string): string {
   const params = new URLSearchParams();
   if (type !== "all") params.set("type", type);
   if (filter !== "all") params.set("filter", filter);
+  if (sort !== "recent") params.set("sort", sort);
   const qs = params.toString();
   return qs ? `/library?${qs}` : "/library";
 }
@@ -55,9 +61,9 @@ function tabHref(type: string, filter: string): string {
 export default async function LibraryPage({
   searchParams,
 }: {
-  searchParams: Promise<{ type?: string; filter?: string }>;
+  searchParams: Promise<{ type?: string; filter?: string; sort?: string }>;
 }) {
-  const { type = "all", filter = "all" } = await searchParams;
+  const { type = "all", filter = "all", sort = "recent" } = await searchParams;
 
   const supabase = await createClient();
   const {
@@ -75,10 +81,13 @@ export default async function LibraryPage({
     if (type === "movie" || type === "tv") query = query.eq("media_type", type);
     if (filter === "favorites") query = query.eq("favorite", true);
     else if (STATUS_VALUES.includes(filter as WatchStatus)) query = query.eq("status", filter);
-    return query
-      .order("updated_at", { ascending: false })
-      .order("id")
-      .range(from, to);
+    if (sort === "title") query = query.order("title", { ascending: true });
+    else if (sort === "year")
+      query = query.order("release_year", { ascending: false, nullsFirst: false });
+    else if (sort === "rating")
+      query = query.order("rating", { ascending: false, nullsFirst: false });
+    else query = query.order("updated_at", { ascending: false });
+    return query.order("id").range(from, to);
   });
 
   // One aggregated row per show instead of paging through every episode watch
@@ -91,41 +100,70 @@ export default async function LibraryPage({
           .eq("user_id", userId)
           .then(({ data }) => data ?? []);
 
-  const [items, counts] = await Promise.all([itemsPromise, countsPromise]);
+  // Status/favorite counts (per selected type) for the filter pills
+  const statsPromise = fetchAllRows<{ status: WatchStatus; favorite: boolean }>(
+    (from, to) => {
+      let query = supabase
+        .from("library_items")
+        .select("status, favorite, id")
+        .eq("user_id", userId);
+      if (type === "movie" || type === "tv") query = query.eq("media_type", type);
+      return query.order("id").range(from, to);
+    }
+  );
+
+  const [items, counts, stats] = await Promise.all([
+    itemsPromise,
+    countsPromise,
+    statsPromise,
+  ]);
   const watchedCounts = new Map(counts.map((c) => [c.tmdb_show_id, c.watched_count]));
+
+  const tabCount = (value: string): number => {
+    if (value === "all") return stats.length;
+    if (value === "favorites") return stats.filter((s) => s.favorite).length;
+    return stats.filter((s) => s.status === value).length;
+  };
 
   return (
     <div>
-      <h1 className="mb-4 text-2xl font-bold tracking-tight">Library</h1>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold tracking-tight">Library</h1>
 
-      <div className="mb-3 flex gap-2">
-        {TYPE_TABS.map((tab) => (
-          <TabLink
-            key={tab.value}
-            href={tabHref(tab.value, filter)}
-            active={type === tab.value}
-            className="rounded-lg border px-3.5 py-1.5 text-sm font-semibold transition-colors"
-            activeClassName="border-accent bg-accent/15 text-accent"
-            inactiveClassName="border-border bg-surface text-muted hover:text-foreground"
-          >
-            {tab.label}
-          </TabLink>
-        ))}
+        <div className="flex overflow-hidden rounded-lg border border-border">
+          {TYPE_TABS.map((tab) => (
+            <TabLink
+              key={tab.value}
+              href={tabHref(tab.value, filter, sort)}
+              active={type === tab.value}
+              className="px-3.5 py-1.5 text-sm font-semibold transition-colors"
+              activeClassName="bg-accent text-white"
+              inactiveClassName="bg-surface text-muted hover:text-foreground"
+            >
+              {tab.label}
+            </TabLink>
+          ))}
+        </div>
       </div>
 
       <div className="no-scrollbar -mx-4 mb-6 flex gap-2 overflow-x-auto px-4">
-        {STATUS_TABS.map((tab) => (
-          <TabLink
-            key={tab.value}
-            href={tabHref(type, tab.value)}
-            active={filter === tab.value}
-            className="shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
-            activeClassName="bg-accent text-white"
-            inactiveClassName="bg-surface text-muted hover:text-foreground"
-          >
-            {tab.label}
-          </TabLink>
-        ))}
+        {STATUS_TABS.map((tab) => {
+          const count = tabCount(tab.value);
+          if (count === 0 && tab.value !== "all") return null;
+          return (
+            <TabLink
+              key={tab.value}
+              href={tabHref(type, tab.value, sort)}
+              active={filter === tab.value}
+              className="shrink-0 rounded-full px-3 py-1.5 text-sm font-medium transition-colors"
+              activeClassName="bg-accent text-white"
+              inactiveClassName="bg-surface text-muted hover:text-foreground"
+            >
+              {tab.label}
+              <span className="ml-1.5 text-xs opacity-70">{count}</span>
+            </TabLink>
+          );
+        })}
       </div>
 
       {items.length === 0 ? (
@@ -137,7 +175,24 @@ export default async function LibraryPage({
         </div>
       ) : (
         <>
-          <p className="mb-3 text-sm text-muted">{items.length.toLocaleString()} items</p>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-muted">{items.length.toLocaleString()} items</p>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted">Sort</span>
+              {SORT_TABS.map((tab) => (
+                <TabLink
+                  key={tab.value}
+                  href={tabHref(type, filter, tab.value)}
+                  active={sort === tab.value}
+                  className="rounded-md px-2 py-1 text-xs font-medium transition-colors"
+                  activeClassName="bg-accent/15 text-accent"
+                  inactiveClassName="text-muted hover:text-foreground"
+                >
+                  {tab.label}
+                </TabLink>
+              ))}
+            </div>
+          </div>
           <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
             {items.map((item) => {
               const watched = watchedCounts.get(item.tmdb_id) ?? 0;

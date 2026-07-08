@@ -48,19 +48,18 @@ export interface MediaSnapshot {
   totalEpisodes: number | null;
 }
 
+/**
+ * User-selectable statuses. "completed" for shows is set automatically when
+ * all aired episodes of an ended show are watched, and "dropped" only exists
+ * for imported data — neither is offered in the UI.
+ */
 export const TV_STATUSES: WatchStatus[] = [
   "watching",
-  "completed",
   "plan_to_watch",
   "on_hold",
-  "dropped",
 ];
 
-export const MOVIE_STATUSES: WatchStatus[] = [
-  "completed",
-  "plan_to_watch",
-  "dropped",
-];
+export const MOVIE_STATUSES: WatchStatus[] = ["completed", "plan_to_watch"];
 
 export function statusLabel(status: WatchStatus, mediaType: MediaType): string {
   const labels: Record<WatchStatus, string> = {

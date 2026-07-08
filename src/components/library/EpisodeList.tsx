@@ -1,7 +1,7 @@
 "use client";
 
 import { useOptimistic, useTransition } from "react";
-import { setEpisodeWatched, setSeasonWatched } from "@/actions/episodes";
+import { setEpisodeWatched, setSeasonWatched, setWatchedUpTo } from "@/actions/episodes";
 import { cn, formatDate, formatRuntime } from "@/lib/utils";
 import type { MediaSnapshot } from "@/types/library";
 
@@ -15,7 +15,8 @@ export interface EpisodeRow {
 
 type OptimisticAction =
   | { type: "toggle"; episodeNumber: number; watched: boolean }
-  | { type: "season"; episodeNumbers: number[]; watched: boolean };
+  | { type: "season"; episodeNumbers: number[]; watched: boolean }
+  | { type: "upTo"; episodeNumber: number };
 
 export function EpisodeList({
   showTmdbId,
@@ -39,6 +40,10 @@ export function EpisodeList({
           ? [...current, action.episodeNumber]
           : current.filter((n) => n !== action.episodeNumber);
       }
+      if (action.type === "upTo") {
+        const upTo = Array.from({ length: action.episodeNumber }, (_, i) => i + 1);
+        return [...new Set([...current, ...upTo])];
+      }
       return action.watched
         ? [...new Set([...current, ...action.episodeNumbers])]
         : [];
@@ -61,6 +66,18 @@ export function EpisodeList({
         episodeNumber: ep.episodeNumber,
         runtimeMinutes: ep.runtimeMinutes,
         watched,
+        snapshot,
+      });
+    });
+  }
+
+  function watchUpTo(ep: EpisodeRow) {
+    startTransition(async () => {
+      applyOptimistic({ type: "upTo", episodeNumber: ep.episodeNumber });
+      await setWatchedUpTo({
+        showTmdbId,
+        seasonNumber,
+        episodeNumber: ep.episodeNumber,
         snapshot,
       });
     });
@@ -108,12 +125,12 @@ export function EpisodeList({
         {episodes.map((ep) => {
           const watched = watchedSet.has(ep.episodeNumber);
           return (
-            <li key={ep.episodeNumber}>
+            <li key={ep.episodeNumber} className="group/ep relative">
               <button
                 type="button"
                 onClick={() => toggle(ep)}
                 className={cn(
-                  "flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-2",
+                  "flex w-full items-center gap-3 px-4 py-3 pr-24 text-left transition-colors hover:bg-surface-2",
                   !ep.aired && "opacity-50"
                 )}
               >
@@ -143,6 +160,17 @@ export function EpisodeList({
                   </span>
                 </span>
               </button>
+              {ep.aired && !watched && (
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => watchUpTo(ep)}
+                  title={`Mark everything up to E${ep.episodeNumber} watched`}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md border border-border bg-surface-2 px-2 py-1 text-xs text-muted transition-colors hover:border-accent hover:text-foreground sm:opacity-0 sm:group-hover/ep:opacity-100 sm:focus:opacity-100"
+                >
+                  ↧ up to here
+                </button>
+              )}
             </li>
           );
         })}

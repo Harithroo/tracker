@@ -16,7 +16,11 @@ function actionsFor(mediaType: MediaType, status?: WatchStatus | null): MenuActi
     if (status !== "completed") actions.push({ label: "✓ Mark watched", status: "completed" });
     if (!status) actions.push({ label: "+ Add to watchlist", status: "plan_to_watch" });
   } else {
-    if (status !== "watching") actions.push({ label: "▶ Start watching", status: "watching" });
+    if (!status || status === "plan_to_watch") {
+      actions.push({ label: "▶ Start watching", status: "watching" });
+    }
+    if (status === "on_hold") actions.push({ label: "▶ Resume watching", status: "watching" });
+    if (status === "watching") actions.push({ label: "⏸ Put on hold", status: "on_hold" });
     if (!status) actions.push({ label: "+ Add to watchlist", status: "plan_to_watch" });
   }
   if (status) actions.push({ label: "✕ Remove from library", status: "remove" });

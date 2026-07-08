@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getMovie } from "@/lib/tmdb/client";
 import { formatRuntime, yearOf } from "@/lib/utils";
-import type { MediaSnapshot } from "@/types/library";
+import type { MediaSnapshot, WatchStatus } from "@/types/library";
 import { DetailsHero, pickTrailer } from "@/components/media/DetailsHero";
 import { CastRow } from "@/components/media/CastRow";
 import { MediaRow, RowItem } from "@/components/media/MediaRow";
@@ -46,6 +46,21 @@ export default async function MoviePage({
 
   const recommendations = movie.recommendations?.results?.slice(0, 12) ?? [];
 
+  // Library status for the recommendation cards' indicators/quick menus
+  const recStatus = new Map<number, WatchStatus>();
+  if (recommendations.length > 0) {
+    const { data: rows } = await supabase
+      .from("library_items")
+      .select("tmdb_id, status")
+      .eq("user_id", user!.id)
+      .eq("media_type", "movie")
+      .in(
+        "tmdb_id",
+        recommendations.map((r) => r.id)
+      );
+    for (const row of rows ?? []) recStatus.set(row.tmdb_id, row.status);
+  }
+
   return (
     <div className="space-y-10">
       <DetailsHero
@@ -82,6 +97,11 @@ export default async function MoviePage({
                 posterPath={rec.poster_path}
                 title={rec.title ?? ""}
                 subtitle={String(yearOf(rec.release_date) ?? "")}
+                quick={{
+                  tmdbId: rec.id,
+                  mediaType: "movie",
+                  status: recStatus.get(rec.id) ?? null,
+                }}
               />
             </RowItem>
           ))}

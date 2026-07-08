@@ -2,7 +2,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { fetchAllRows } from "@/lib/supabase/fetch-all";
 import { getShow, getTrending } from "@/lib/tmdb/client";
-import { episodeKey, nextEpisode } from "@/lib/progress";
+import { episodeKey, nextAiredEpisode } from "@/lib/progress";
 import { epCode, yearOf } from "@/lib/utils";
 import type { LibraryItem, WatchStatus } from "@/types/library";
 import type { TmdbSearchResult } from "@/lib/tmdb/types";
@@ -50,12 +50,16 @@ export default async function HomePage() {
     return lb.localeCompare(la);
   });
   const recent = byRecency.filter((i) => (lastWatched.get(i.tmdb_id) ?? "") >= cutoff);
-  const watching = (recent.length > 0 ? recent : byRecency).slice(0, 12);
-  const tvItems = watching.filter((i) => i.media_type === "tv");
+  const candidates = (recent.length > 0 ? recent : byRecency)
+    .filter((i) => i.media_type === "tv")
+    .slice(0, 16);
 
+  // Keep only shows with an unwatched *aired* episode — fully caught-up shows
+  // (waiting on new episodes) don't belong in Continue Watching.
   const upNext = new Map<number, string>();
+  const hasAiredNext = new Set<number>();
   await Promise.all(
-    tvItems.slice(0, 8).map(async (item) => {
+    candidates.map(async (item) => {
       try {
         const [show, epRows] = await Promise.all([
           getShow(item.tmdb_id),
@@ -72,13 +76,18 @@ export default async function HomePage() {
         const watched = new Set(
           epRows.map((row) => episodeKey(row.season_number, row.episode_number))
         );
-        const next = nextEpisode(show.seasons, watched);
-        if (next) upNext.set(item.tmdb_id, epCode(next.season, next.episode));
+        const next = nextAiredEpisode(show.seasons, show.last_episode_to_air, watched);
+        if (next) {
+          hasAiredNext.add(item.tmdb_id);
+          upNext.set(item.tmdb_id, epCode(next.season, next.episode));
+        }
       } catch {
-        // TMDB unavailable — skip the badge, keep the page working
+        // TMDB unavailable — keep the show visible rather than hiding it
+        hasAiredNext.add(item.tmdb_id);
       }
     })
   );
+  const watching = candidates.filter((i) => hasAiredNext.has(i.tmdb_id)).slice(0, 12);
 
   let trendingTv: TmdbSearchResult[] = [];
   let trendingMovies: TmdbSearchResult[] = [];

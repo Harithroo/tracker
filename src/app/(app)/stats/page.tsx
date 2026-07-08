@@ -51,25 +51,30 @@ export default async function StatsPage() {
   ]);
 
   // Headline numbers
-  const completedMovies = items.filter(
-    (i) => i.media_type === "movie" && i.status === "completed"
-  );
-  const completedShows = items.filter(
-    (i) => i.media_type === "tv" && i.status === "completed"
-  );
-  const watchingShows = items.filter(
-    (i) => i.media_type === "tv" && i.status === "watching"
-  );
+  const movies = items.filter((i) => i.media_type === "movie");
+  const shows = items.filter((i) => i.media_type === "tv");
+  const completedMovies = movies.filter((i) => i.status === "completed");
+  const completedShows = shows.filter((i) => i.status === "completed");
+  const watchingShows = shows.filter((i) => i.status === "watching");
 
-  const totalMinutes =
-    completedMovies.reduce((sum, m) => sum + (m.runtime_minutes ?? 0), 0) +
-    episodes.reduce((sum, e) => sum + (e.runtime_minutes ?? 0), 0);
+  const movieMinutes = completedMovies.reduce(
+    (sum, m) => sum + (m.runtime_minutes ?? 0),
+    0
+  );
+  const episodeMinutes = episodes.reduce(
+    (sum, e) => sum + (e.runtime_minutes ?? 0),
+    0
+  );
+  const totalMinutes = movieMinutes + episodeMinutes;
 
-  const ratings = items.filter((i) => i.rating !== null).map((i) => i.rating!);
-  const avgRating =
-    ratings.length > 0
+  const avgOf = (list: ItemRow[]): string | null => {
+    const ratings = list.filter((i) => i.rating !== null).map((i) => i.rating!);
+    return ratings.length > 0
       ? (ratings.reduce((a, b) => a + b, 0) / ratings.length).toFixed(1)
       : null;
+  };
+  const avgMovieRating = avgOf(movies);
+  const avgShowRating = avgOf(shows);
 
   // Favorite genres (across the whole library)
   const genreCounts = new Map<number, number>();
@@ -133,40 +138,76 @@ export default async function StatsPage() {
     day.setDate(day.getDate() - 1);
   }
 
-  const cards = [
-    { label: "Movies watched", value: completedMovies.length },
+  const sections: {
+    title: string;
+    cards: { label: string; value: string | number; hint?: string }[];
+  }[] = [
     {
-      label: "Shows",
-      value: `${completedShows.length}`,
-      hint: `${watchingShows.length} watching`,
+      title: "Movies",
+      cards: [
+        { label: "Watched", value: completedMovies.length },
+        {
+          label: "Plan to watch",
+          value: movies.filter((i) => i.status === "plan_to_watch").length,
+        },
+        { label: "Watch time", value: formatWatchTime(movieMinutes) },
+        {
+          label: "Average rating",
+          value: avgMovieRating ? `★ ${avgMovieRating}` : "—",
+        },
+      ],
     },
-    { label: "Episodes watched", value: episodes.length },
-    { label: "Total watch time", value: formatWatchTime(totalMinutes) },
     {
-      label: "Watching streak",
-      value: `${streak} day${streak === 1 ? "" : "s"}`,
+      title: "Shows",
+      cards: [
+        {
+          label: "Completed",
+          value: completedShows.length,
+          hint: `${watchingShows.length} watching`,
+        },
+        { label: "Episodes watched", value: episodes.length },
+        { label: "Watch time", value: formatWatchTime(episodeMinutes) },
+        {
+          label: "Average rating",
+          value: avgShowRating ? `★ ${avgShowRating}` : "—",
+        },
+      ],
     },
-    { label: "Average rating", value: avgRating ? `★ ${avgRating}` : "—" },
+    {
+      title: "Overall",
+      cards: [
+        { label: "Total watch time", value: formatWatchTime(totalMinutes) },
+        {
+          label: "Watching streak",
+          value: `${streak} day${streak === 1 ? "" : "s"}`,
+        },
+      ],
+    },
   ];
 
   return (
     <div className="space-y-8">
       <h1 className="text-2xl font-bold tracking-tight">Stats</h1>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        {cards.map((card) => (
-          <div
-            key={card.label}
-            className="rounded-xl border border-border bg-surface p-4"
-          >
-            <p className="text-2xl font-bold">{card.value}</p>
-            <p className="mt-1 text-sm text-muted">
-              {card.label}
-              {"hint" in card && card.hint ? ` · ${card.hint}` : ""}
-            </p>
+      {sections.map((section) => (
+        <section key={section.title}>
+          <h2 className="mb-3 text-lg font-semibold">{section.title}</h2>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {section.cards.map((card) => (
+              <div
+                key={card.label}
+                className="rounded-xl border border-border bg-surface p-4"
+              >
+                <p className="text-2xl font-bold">{card.value}</p>
+                <p className="mt-1 text-sm text-muted">
+                  {card.label}
+                  {card.hint ? ` · ${card.hint}` : ""}
+                </p>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </section>
+      ))}
 
       <section className="rounded-xl border border-border bg-surface p-5">
         <h2 className="mb-4 text-lg font-semibold">Last 12 Months</h2>
