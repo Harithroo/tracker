@@ -1,12 +1,16 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { fetchAllRows } from "@/lib/supabase/fetch-all";
-import { getShow, getTrending } from "@/lib/tmdb/client";
+import { getSeason, getShow, getTrending } from "@/lib/tmdb/client";
 import { episodeKey, nextAiredEpisode } from "@/lib/progress";
 import { epCode, yearOf } from "@/lib/utils";
-import type { LibraryItem, WatchStatus } from "@/types/library";
+import type { LibraryItem, MediaSnapshot, WatchStatus } from "@/types/library";
 import type { TmdbSearchResult } from "@/lib/tmdb/types";
 import { PosterCard } from "@/components/media/PosterCard";
+import {
+  ContinueWatchingCard,
+  type UpNextEpisode,
+} from "@/components/media/ContinueWatchingCard";
 import { MediaRow, RowItem } from "@/components/media/MediaRow";
 
 export default async function HomePage() {
@@ -56,7 +60,7 @@ export default async function HomePage() {
 
   // Keep only shows with an unwatched *aired* episode — fully caught-up shows
   // (waiting on new episodes) don't belong in Continue Watching.
-  const upNext = new Map<number, string>();
+  const upNext = new Map<number, UpNextEpisode>();
   const hasAiredNext = new Set<number>();
   await Promise.all(
     candidates.map(async (item) => {
@@ -79,7 +83,29 @@ export default async function HomePage() {
         const next = nextAiredEpisode(show.seasons, show.last_episode_to_air, watched);
         if (next) {
           hasAiredNext.add(item.tmdb_id);
-          upNext.set(item.tmdb_id, epCode(next.season, next.episode));
+          // Pull the up-next episode's title/runtime so the card can show it and
+          // log an accurate runtime when marked watched.
+          let name = "";
+          let runtimeMinutes: number | null = null;
+          try {
+            const season = await getSeason(item.tmdb_id, next.season);
+            const ep = season.episodes.find(
+              (e) => e.episode_number === next.episode
+            );
+            if (ep) {
+              name = ep.name;
+              runtimeMinutes = ep.runtime;
+            }
+          } catch {
+            // Episode detail unavailable — the card still shows the code.
+          }
+          upNext.set(item.tmdb_id, {
+            seasonNumber: next.season,
+            episodeNumber: next.episode,
+            name,
+            runtimeMinutes,
+            code: epCode(next.season, next.episode),
+          });
         }
       } catch {
         // TMDB unavailable — keep the show visible rather than hiding it
@@ -127,31 +153,29 @@ export default async function HomePage() {
             </Link>
           </div>
         ) : (
-          <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-6">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {watching.map((item) => {
               const watchedCount = watchedCounts.get(item.tmdb_id) ?? 0;
-              const progress =
-                item.media_type === "tv" && item.total_episodes
-                  ? (watchedCount / item.total_episodes) * 100
-                  : undefined;
+              const snapshot: MediaSnapshot = {
+                title: item.title,
+                posterPath: item.poster_path,
+                releaseYear: item.release_year,
+                runtimeMinutes: item.runtime_minutes,
+                genreIds: item.genre_ids,
+                totalEpisodes: item.total_episodes,
+              };
               return (
-                <PosterCard
+                <ContinueWatchingCard
                   key={item.id}
+                  showTmdbId={item.tmdb_id}
                   href={`/${item.media_type}/${item.tmdb_id}`}
                   posterPath={item.poster_path}
                   title={item.title}
-                  subtitle={
-                    item.media_type === "tv" && item.total_episodes
-                      ? `${watchedCount} / ${item.total_episodes} eps`
-                      : String(item.release_year ?? "")
-                  }
-                  badge={upNext.get(item.tmdb_id) ?? null}
-                  progress={progress}
-                  quick={{
-                    tmdbId: item.tmdb_id,
-                    mediaType: item.media_type,
-                    status: item.status,
-                  }}
+                  upNext={upNext.get(item.tmdb_id) ?? null}
+                  watchedCount={watchedCount}
+                  totalEpisodes={item.total_episodes}
+                  status={item.status}
+                  snapshot={snapshot}
                 />
               );
             })}
