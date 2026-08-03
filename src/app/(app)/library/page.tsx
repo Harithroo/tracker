@@ -128,7 +128,7 @@ export default async function LibraryPage({
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold tracking-tight">Library</h1>
+        <h1 className="text-2xl font-medium tracking-tight">Library</h1>
 
         <div className="flex overflow-hidden rounded-lg border border-border">
           {TYPE_TABS.map((tab) => (
@@ -193,7 +193,7 @@ export default async function LibraryPage({
               ))}
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
             {items.map((item) => {
               const watched = watchedCounts.get(item.tmdb_id) ?? 0;
               const progress =

@@ -2,16 +2,25 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { fetchAllRows } from "@/lib/supabase/fetch-all";
 import { getSeason, getShow, getTrending } from "@/lib/tmdb/client";
+import { getWeekSummary } from "@/lib/activity";
 import { episodeKey, nextAiredEpisode } from "@/lib/progress";
-import { epCode, yearOf } from "@/lib/utils";
+import {
+  daysAgoIso,
+  epCode,
+  formatRelativeTime,
+  formatShortDuration,
+  yearOf,
+} from "@/lib/utils";
 import type { LibraryItem, MediaSnapshot, WatchStatus } from "@/types/library";
 import type { TmdbSearchResult } from "@/lib/tmdb/types";
 import { PosterCard } from "@/components/media/PosterCard";
-import {
-  ContinueWatchingCard,
-  type UpNextEpisode,
-} from "@/components/media/ContinueWatchingCard";
+import { UpNextHero, type HeroUpNext } from "@/components/media/UpNextHero";
+import { KeepWatchingRow } from "@/components/media/KeepWatchingRow";
 import { MediaRow, RowItem } from "@/components/media/MediaRow";
+
+interface UpNextInfo extends HeroUpNext {
+  backdropPath: string | null;
+}
 
 export default async function HomePage() {
   const supabase = await createClient();
@@ -47,7 +56,7 @@ export default async function HomePage() {
   }
 
   const RECENT_DAYS = 60;
-  const cutoff = new Date(Date.now() - RECENT_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff = daysAgoIso(RECENT_DAYS);
   const byRecency = [...allWatching].sort((a, b) => {
     const la = lastWatched.get(a.tmdb_id) ?? "";
     const lb = lastWatched.get(b.tmdb_id) ?? "";
@@ -60,7 +69,7 @@ export default async function HomePage() {
 
   // Keep only shows with an unwatched *aired* episode — fully caught-up shows
   // (waiting on new episodes) don't belong in Continue Watching.
-  const upNext = new Map<number, UpNextEpisode>();
+  const upNext = new Map<number, UpNextInfo>();
   const hasAiredNext = new Set<number>();
   await Promise.all(
     candidates.map(async (item) => {
@@ -87,6 +96,7 @@ export default async function HomePage() {
           // log an accurate runtime when marked watched.
           let name = "";
           let runtimeMinutes: number | null = null;
+          let airDate: string | null = null;
           try {
             const season = await getSeason(item.tmdb_id, next.season);
             const ep = season.episodes.find(
@@ -95,6 +105,7 @@ export default async function HomePage() {
             if (ep) {
               name = ep.name;
               runtimeMinutes = ep.runtime;
+              airDate = ep.air_date;
             }
           } catch {
             // Episode detail unavailable — the card still shows the code.
@@ -104,7 +115,9 @@ export default async function HomePage() {
             episodeNumber: next.episode,
             name,
             runtimeMinutes,
+            airDate,
             code: epCode(next.season, next.episode),
+            backdropPath: show.backdrop_path,
           });
         }
       } catch {
@@ -114,6 +127,9 @@ export default async function HomePage() {
     })
   );
   const watching = candidates.filter((i) => hasAiredNext.has(i.tmdb_id)).slice(0, 12);
+  const [hero, ...rest] = watching;
+
+  const weekSummary = await getWeekSummary(supabase, userId);
 
   let trendingTv: TmdbSearchResult[] = [];
   let trendingMovies: TmdbSearchResult[] = [];
@@ -141,46 +157,103 @@ export default async function HomePage() {
     }
   }
 
+  function snapshotOf(item: LibraryItem): MediaSnapshot {
+    return {
+      title: item.title,
+      posterPath: item.poster_path,
+      releaseYear: item.release_year,
+      runtimeMinutes: item.runtime_minutes,
+      genreIds: item.genre_ids,
+      totalEpisodes: item.total_episodes,
+    };
+  }
+
   return (
-    <div className="space-y-10">
-      <section>
-        <h1 className="mb-3 text-lg font-semibold">Continue Watching</h1>
-        {watching.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted">
-            Nothing in progress yet.{" "}
-            <Link href="/search" className="text-accent hover:text-accent-hover">
-              Find something to watch →
+    <div className="space-y-8">
+      {hero && upNext.has(hero.tmdb_id) ? (
+        <UpNextHero
+          showTmdbId={hero.tmdb_id}
+          href={`/tv/${hero.tmdb_id}`}
+          title={hero.title}
+          posterPath={hero.poster_path}
+          backdropPath={upNext.get(hero.tmdb_id)!.backdropPath}
+          upNext={upNext.get(hero.tmdb_id)!}
+          watchedCount={watchedCounts.get(hero.tmdb_id) ?? 0}
+          totalEpisodes={hero.total_episodes}
+          favorite={hero.favorite}
+          lastWatchedLabel={
+            lastWatched.has(hero.tmdb_id)
+              ? formatRelativeTime(lastWatched.get(hero.tmdb_id)!)
+              : null
+          }
+          snapshot={snapshotOf(hero)}
+        />
+      ) : (
+        <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted">
+          Nothing in progress yet.{" "}
+          <Link href="/search" className="text-accent hover:text-accent-hover">
+            Find something to watch →
+          </Link>
+        </div>
+      )}
+
+      {rest.length > 0 && (
+        <section>
+          <div className="mb-2.5 flex items-baseline justify-between">
+            <h2 className="text-[13px] font-semibold uppercase tracking-[0.1em] text-neutral-500">
+              Keep watching
+            </h2>
+            <Link href="/library?filter=watching" className="text-[13px] text-neutral-500 hover:text-text">
+              All {rest.length + 1}
             </Link>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {watching.map((item) => {
-              const watchedCount = watchedCounts.get(item.tmdb_id) ?? 0;
-              const snapshot: MediaSnapshot = {
-                title: item.title,
-                posterPath: item.poster_path,
-                releaseYear: item.release_year,
-                runtimeMinutes: item.runtime_minutes,
-                genreIds: item.genre_ids,
-                totalEpisodes: item.total_episodes,
-              };
+          <div className="flex flex-col gap-2">
+            {rest.map((item) => {
+              const next = upNext.get(item.tmdb_id)!;
               return (
-                <ContinueWatchingCard
+                <KeepWatchingRow
                   key={item.id}
                   showTmdbId={item.tmdb_id}
-                  href={`/${item.media_type}/${item.tmdb_id}`}
+                  href={`/tv/${item.tmdb_id}`}
                   posterPath={item.poster_path}
                   title={item.title}
-                  upNext={upNext.get(item.tmdb_id) ?? null}
-                  watchedCount={watchedCount}
+                  code={next.code}
+                  episodeName={next.name}
+                  watchedCount={watchedCounts.get(item.tmdb_id) ?? 0}
                   totalEpisodes={item.total_episodes}
-                  status={item.status}
-                  snapshot={snapshot}
+                  runtimeMinutes={next.runtimeMinutes}
+                  seasonNumber={next.seasonNumber}
+                  episodeNumber={next.episodeNumber}
+                  snapshot={snapshotOf(item)}
                 />
               );
             })}
           </div>
-        )}
+        </section>
+      )}
+
+      <section>
+        <h2 className="mb-2.5 text-[13px] font-semibold uppercase tracking-[0.1em] text-neutral-500">
+          This week
+        </h2>
+        <div className="flex gap-2.5">
+          <div className="flex-1 rounded-lg bg-neutral-900 p-3.5">
+            <p className="text-[23px] font-medium tracking-tight">{weekSummary.episodes}</p>
+            <p className="mt-0.5 text-xs text-neutral-500">episodes</p>
+          </div>
+          <div className="flex-1 rounded-lg bg-neutral-900 p-3.5">
+            <p className="text-[23px] font-medium tracking-tight">
+              {formatShortDuration(weekSummary.minutes)}
+            </p>
+            <p className="mt-0.5 text-xs text-neutral-500">watched</p>
+          </div>
+          <div className="flex-1 rounded-lg bg-neutral-900 p-3.5">
+            <p className="text-[23px] font-medium tracking-tight text-accent-300">
+              {weekSummary.streakDays}
+            </p>
+            <p className="mt-0.5 text-xs text-neutral-500">day streak</p>
+          </div>
+        </div>
       </section>
 
       {tmdbDown ? (

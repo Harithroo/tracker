@@ -73,7 +73,7 @@ export default async function SeasonPage({
         </Link>
       </p>
       <div className="mb-1 mt-1 flex items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold tracking-tight">{season.name}</h1>
+        <h1 className="text-2xl font-medium tracking-tight">{season.name}</h1>
         <div className="flex shrink-0 gap-2 text-sm">
           {prev && (
             <Link
