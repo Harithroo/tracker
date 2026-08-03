@@ -1,17 +1,17 @@
-import Image from "next/image";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { fetchAllRows } from "@/lib/supabase/fetch-all";
-import { getShow } from "@/lib/tmdb/client";
-import { posterUrl } from "@/lib/tmdb/images";
-import { yearOf } from "@/lib/utils";
+import { getSeason, getShow } from "@/lib/tmdb/client";
+import { episodeKey, nextAiredEpisode } from "@/lib/progress";
+import { isAired, yearOf } from "@/lib/utils";
 import type { MediaSnapshot, WatchStatus } from "@/types/library";
 import { DetailsHero, pickTrailer } from "@/components/media/DetailsHero";
 import { CastRow } from "@/components/media/CastRow";
 import { MediaRow, RowItem } from "@/components/media/MediaRow";
 import { PosterCard } from "@/components/media/PosterCard";
 import { LibraryControls } from "@/components/library/LibraryControls";
+import { InlineEpisodes } from "@/components/library/InlineEpisodes";
+import type { EpisodeRow } from "@/components/library/EpisodeList";
 
 export default async function ShowPage({
   params,
@@ -36,10 +36,10 @@ export default async function ShowPage({
       .eq("tmdb_id", showId)
       .eq("media_type", "tv")
       .maybeSingle(),
-    fetchAllRows<{ season_number: number }>((from, to) =>
+    fetchAllRows<{ season_number: number; episode_number: number }>((from, to) =>
       supabase
         .from("episode_watches")
-        .select("season_number")
+        .select("season_number, episode_number")
         .eq("user_id", user!.id)
         .eq("tmdb_show_id", showId)
         .order("id")
@@ -48,15 +48,8 @@ export default async function ShowPage({
   ]);
   if (!show) notFound();
 
-  // Watched count per season
-  const watchedPerSeason = new Map<number, number>();
-  for (const row of epRows) {
-    watchedPerSeason.set(
-      row.season_number,
-      (watchedPerSeason.get(row.season_number) ?? 0) + 1
-    );
-  }
   const totalWatched = epRows.length;
+  const watchedSet = new Set(epRows.map((row) => episodeKey(row.season_number, row.episode_number)));
 
   const snapshot: MediaSnapshot = {
     title: show.name,
@@ -70,6 +63,25 @@ export default async function ShowPage({
   const seasons = show.seasons
     .filter((s) => s.episode_count > 0)
     .sort((a, b) => a.season_number - b.season_number);
+
+  // Default to the season holding the next unwatched aired episode, falling
+  // back to the most recent season once fully caught up.
+  const nextUp = nextAiredEpisode(show.seasons, show.last_episode_to_air, watchedSet);
+  const defaultSeasonNumber =
+    nextUp?.season ?? seasons[seasons.length - 1]?.season_number ?? 1;
+  const defaultSeason = await getSeason(showId, defaultSeasonNumber).catch(() => null);
+  const initialEpisodes: EpisodeRow[] =
+    defaultSeason?.episodes.map((ep) => ({
+      episodeNumber: ep.episode_number,
+      name: ep.name,
+      airDate: ep.air_date,
+      runtimeMinutes: ep.runtime,
+      aired: isAired(ep.air_date),
+    })) ?? [];
+  const initialWatchedEpisodes = epRows
+    .filter((row) => row.season_number === defaultSeasonNumber)
+    .map((row) => row.episode_number);
+
   const recommendations = show.recommendations?.results?.slice(0, 12) ?? [];
 
   // Library status for the recommendation cards' indicators/quick menus
@@ -114,58 +126,37 @@ export default async function ShowPage({
         />
       </DetailsHero>
 
-      <section>
-        <div className="mb-3 flex items-baseline justify-between">
-          <h2 className="text-lg font-semibold">Seasons</h2>
-          {show.number_of_episodes > 0 && (
-            <span className="text-sm text-muted">
-              {totalWatched} / {show.number_of_episodes} episodes watched
-            </span>
-          )}
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {seasons.map((season) => {
-            const watched = watchedPerSeason.get(season.season_number) ?? 0;
-            const pct = (watched / season.episode_count) * 100;
-            const poster = posterUrl(season.poster_path, "w185");
-            return (
-              <Link
-                key={season.id}
-                href={`/tv/${showId}/season/${season.season_number}`}
-                className="flex gap-3 rounded-xl border border-border bg-surface p-3 transition-colors hover:border-accent"
-              >
-                <div className="relative h-24 w-16 shrink-0 overflow-hidden rounded-lg bg-surface-2">
-                  {poster && (
-                    <Image
-                      src={poster}
-                      alt={season.name}
-                      fill
-                      sizes="64px"
-                      className="object-cover"
-                    />
-                  )}
-                </div>
-                <div className="min-w-0 flex-1 self-center">
-                  <p className="font-medium">{season.name}</p>
-                  <p className="text-xs text-muted">
-                    {[yearOf(season.air_date), `${season.episode_count} episodes`]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </p>
-                  <div className="mt-2 h-1 overflow-hidden rounded-full bg-surface-2">
-                    <div
-                      className="h-full bg-accent"
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                  <p className="mt-1 text-xs text-muted">
-                    {watched} / {season.episode_count} watched
-                  </p>
-                </div>
-              </Link>
-            );
-          })}
-        </div>
+      <section className="space-y-3.5">
+        {show.number_of_episodes > 0 && (
+          <div className="rounded-lg bg-neutral-900 p-3.5">
+            <div className="mb-2 flex items-baseline justify-between">
+              <span className="text-[13px] text-neutral-400">
+                {totalWatched} of {show.number_of_episodes} episodes
+              </span>
+              <span className="text-[13px] font-medium text-accent-300">
+                {Math.round((totalWatched / show.number_of_episodes) * 100)}%
+              </span>
+            </div>
+            <div className="h-1 overflow-hidden rounded-full bg-neutral-800">
+              <div
+                className="h-full bg-accent"
+                style={{ width: `${(totalWatched / show.number_of_episodes) * 100}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        <InlineEpisodes
+          showTmdbId={showId}
+          seasons={seasons.map((s) => ({
+            seasonNumber: s.season_number,
+            label: `S${s.season_number}`,
+          }))}
+          initialSeasonNumber={defaultSeasonNumber}
+          initialEpisodes={initialEpisodes}
+          initialWatchedEpisodes={initialWatchedEpisodes}
+          snapshot={snapshot}
+        />
       </section>
 
       <CastRow cast={show.credits?.cast ?? []} />

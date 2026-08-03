@@ -7,8 +7,8 @@ export default function manifest(): MetadataRoute.Manifest {
     description: "Personal movie & TV show tracker",
     start_url: "/",
     display: "standalone",
-    background_color: "#0a0a10",
-    theme_color: "#0a0a10",
+    background_color: "#161826",
+    theme_color: "#161826",
     icons: [
       {
         src: "/icon-192.png",

@@ -2,30 +2,31 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState } from "react";
 import { logout } from "@/actions/auth";
 import { cn } from "@/lib/utils";
+import { SearchSheet } from "./SearchSheet";
 
 const LINKS = [
   { href: "/", label: "Home", icon: HomeIcon },
-  { href: "/search", label: "Search", icon: SearchIcon },
   { href: "/library", label: "Library", icon: LibraryIcon },
   { href: "/calendar", label: "Calendar", icon: CalendarIcon },
-  { href: "/stats", label: "Stats", icon: ChartIcon },
-  { href: "/settings", label: "Settings", icon: GearIcon },
+  { href: "/you", label: "You", icon: YouIcon },
 ];
 
 export function Navbar() {
   const pathname = usePathname();
+  const [searchOpen, setSearchOpen] = useState(false);
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname.startsWith(href);
 
   return (
     <>
       {/* Desktop top bar */}
-      <header className="sticky top-0 z-40 hidden border-b border-border bg-background/80 backdrop-blur md:block">
+      <header className="sticky top-0 z-40 hidden border-b border-neutral-800 bg-bg/80 backdrop-blur md:block">
         <nav className="mx-auto flex h-14 max-w-6xl items-center gap-1 px-4">
-          <Link href="/" className="mr-6 text-lg font-bold tracking-tight">
-            <span className="text-accent">▸</span> Tracker
+          <Link href="/" className="mr-6 text-lg font-semibold tracking-tight">
+            <span className="text-accent-300">▸</span> Tracker
           </Link>
           {LINKS.map(({ href, label }) => (
             <Link
@@ -34,17 +35,25 @@ export function Navbar() {
               className={cn(
                 "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
                 isActive(href)
-                  ? "bg-surface-2 text-foreground"
-                  : "text-muted hover:text-foreground"
+                  ? "bg-accent-900 text-accent-200"
+                  : "text-neutral-500 hover:text-text"
               )}
             >
               {label}
             </Link>
           ))}
+          <button
+            type="button"
+            aria-label="Search"
+            onClick={() => setSearchOpen(true)}
+            className="ml-2 flex h-8 w-8 items-center justify-center rounded-lg text-neutral-500 transition-colors hover:bg-accent-900 hover:text-accent-200"
+          >
+            <SearchIcon />
+          </button>
           <form action={logout} className="ml-auto">
             <button
               type="submit"
-              className="rounded-lg px-3 py-1.5 text-sm font-medium text-muted transition-colors hover:text-foreground"
+              className="rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-500 transition-colors hover:text-text"
             >
               Sign out
             </button>
@@ -53,15 +62,37 @@ export function Navbar() {
       </header>
 
       {/* Mobile bottom tab bar */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-background/90 backdrop-blur md:hidden">
-        <div className="flex h-16 items-stretch justify-around">
-          {LINKS.map(({ href, label, icon: Icon }) => (
+      <nav className="fixed inset-x-0 bottom-0 z-40 bg-gradient-to-t from-bg from-60% to-transparent pt-3.5 md:hidden">
+        <div className="mx-auto h-px max-w-6xl bg-gradient-to-r from-transparent via-neutral-800 to-transparent" />
+        <div className="flex h-[72px] items-center justify-around px-1.5">
+          {LINKS.slice(0, 2).map(({ href, label, icon: Icon }) => (
             <Link
               key={href}
               href={href}
               className={cn(
                 "flex flex-1 flex-col items-center justify-center gap-1 text-[11px] font-medium transition-colors",
-                isActive(href) ? "text-accent" : "text-muted"
+                isActive(href) ? "text-accent-300" : "text-neutral-600"
+              )}
+            >
+              <Icon />
+              {label}
+            </Link>
+          ))}
+          <button
+            type="button"
+            aria-label="Search"
+            onClick={() => setSearchOpen(true)}
+            className="mx-1 flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-full border border-accent bg-accent-900 text-accent-200 shadow-[0_0_0_6px_rgba(145,132,217,0.06)] transition-colors hover:bg-accent-800"
+          >
+            <SearchIcon size={21} />
+          </button>
+          {LINKS.slice(2).map(({ href, label, icon: Icon }) => (
+            <Link
+              key={href}
+              href={href}
+              className={cn(
+                "flex flex-1 flex-col items-center justify-center gap-1 text-[11px] font-medium transition-colors",
+                isActive(href) ? "text-accent-300" : "text-neutral-600"
               )}
             >
               <Icon />
@@ -70,6 +101,8 @@ export function Navbar() {
           ))}
         </div>
       </nav>
+
+      <SearchSheet open={searchOpen} onClose={() => setSearchOpen(false)} />
     </>
   );
 }
@@ -83,9 +116,9 @@ function HomeIcon() {
   );
 }
 
-function SearchIcon() {
+function SearchIcon({ size = 20 }: { size?: number }) {
   return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
       <circle cx="11" cy="11" r="7" />
       <path d="m21 21-4.3-4.3" />
     </svg>
@@ -109,22 +142,11 @@ function CalendarIcon() {
   );
 }
 
-function ChartIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-      <path d="M4 20V10" />
-      <path d="M10 20V4" />
-      <path d="M16 20v-6" />
-      <path d="M22 20H2" />
-    </svg>
-  );
-}
-
-function GearIcon() {
+function YouIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+      <circle cx="12" cy="8" r="3.6" />
+      <path d="M4.5 20a7.5 7.5 0 0 1 15 0" />
     </svg>
   );
 }

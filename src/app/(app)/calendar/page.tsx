@@ -130,8 +130,10 @@ export default async function CalendarPage() {
   return (
     <div className="space-y-10">
       <section>
-        <h1 className="mb-4 text-2xl font-bold tracking-tight">Calendar</h1>
-        <h2 className="mb-3 text-lg font-semibold">Upcoming Episodes</h2>
+        <h1 className="mb-5 text-2xl font-semibold tracking-tight">Calendar</h1>
+        <h2 className="mb-2.5 text-[13px] font-semibold uppercase tracking-[0.1em] text-neutral-500">
+          Airing soon
+        </h2>
         {upcoming.length === 0 ? (
           <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted">
             No upcoming episodes for the shows you&apos;re tracking.
@@ -153,7 +155,9 @@ export default async function CalendarPage() {
       </section>
 
       <section>
-        <h2 className="mb-3 text-lg font-semibold">Watch History</h2>
+        <h2 className="mb-2.5 text-[13px] font-semibold uppercase tracking-[0.1em] text-neutral-500">
+          History
+        </h2>
         {history.length === 0 ? (
           <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted">
             Nothing watched yet.

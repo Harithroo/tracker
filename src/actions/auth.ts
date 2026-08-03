@@ -106,6 +106,6 @@ export async function updateUsername(
     .eq("id", user.id);
   if (error) return { error: error.message };
 
-  revalidatePath("/settings");
+  revalidatePath("/you");
   return { message: "Username updated." };
 }

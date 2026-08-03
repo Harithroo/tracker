@@ -62,7 +62,7 @@ export function DetailsHero({
         )}
 
         <div className="min-w-0 flex-1 self-end">
-          <h1 className="text-3xl font-bold tracking-tight md:text-4xl">{title}</h1>
+          <h1 className="text-3xl font-medium tracking-tight md:text-4xl">{title}</h1>
           {tagline && <p className="mt-1 italic text-muted">{tagline}</p>}
 
           <p className="mt-2 text-sm text-muted">

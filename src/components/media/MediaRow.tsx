@@ -9,7 +9,9 @@ export function MediaRow({
 }) {
   return (
     <section>
-      <h2 className="mb-3 text-lg font-semibold">{title}</h2>
+      <h2 className="mb-2.5 text-[13px] font-semibold uppercase tracking-[0.1em] text-neutral-500">
+        {title}
+      </h2>
       <Carousel>{children}</Carousel>
     </section>
   );
