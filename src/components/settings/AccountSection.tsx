@@ -5,8 +5,9 @@ import { logout, updatePassword, updateUsername } from "@/actions/auth";
 import { AuthForm } from "@/components/auth/AuthForm";
 import { cn } from "@/lib/utils";
 import { ImportExport } from "./ImportExport";
+import { RepairNumbering } from "./RepairNumbering";
 
-type RowKey = "username" | "password" | "import";
+type RowKey = "username" | "password" | "import" | "repair";
 
 export function AccountSection({
   username,
@@ -70,6 +71,15 @@ export function AccountSection({
         onClick={() => toggle("import")}
       >
         <ImportExport />
+      </Row>
+
+      <Row
+        label="Fix episode numbering"
+        value="›"
+        expanded={open === "repair"}
+        onClick={() => toggle("repair")}
+      >
+        <RepairNumbering />
       </Row>
 
       <form action={logout}>

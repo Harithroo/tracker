@@ -12,7 +12,12 @@ import {
 import { isAired } from "@/lib/utils";
 import { airedEpisodeCount, episodeKey, isShowEnded, nextAiredEpisode } from "@/lib/progress";
 import { fetchAllRows } from "@/lib/supabase/fetch-all";
-import type { MediaSnapshot } from "@/types/library";
+import type {
+  LibraryItem,
+  MediaSnapshot,
+  RepairResult,
+  RepairTarget,
+} from "@/types/library";
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -179,18 +184,9 @@ async function reconcileEpisodeNumbering(
   supabase: SupabaseClient,
   userId: string,
   showTmdbId: number,
+  rows: WatchRow[],
   index: EpisodeIndex
-) {
-  const rows = await fetchAllRows<WatchRow>((from, to) =>
-    supabase
-      .from("episode_watches")
-      .select("id, season_number, episode_number, runtime_minutes, watched_at")
-      .eq("user_id", userId)
-      .eq("tmdb_show_id", showTmdbId)
-      .order("id")
-      .range(from, to)
-  );
-
+): Promise<{ moved: number; dropped: number }> {
   const staleIds: string[] = [];
   // Several stale rows can translate to the same episode; keep the earliest.
   const moved = new Map<string, { season: number; episode: number; row: WatchRow; runtime: number | null }>();
@@ -213,7 +209,7 @@ async function reconcileEpisodeNumbering(
       });
     }
   }
-  if (staleIds.length === 0) return;
+  if (staleIds.length === 0) return { moved: 0, dropped: 0 };
 
   // Write the translated rows before dropping the originals, so a failure
   // partway through leaves the history intact rather than short.
@@ -245,6 +241,27 @@ async function reconcileEpisodeNumbering(
       .in("id", staleIds.slice(i, i + 500));
     if (error) throw new Error(error.message);
   }
+
+  return { moved: moved.size, dropped: staleIds.length - moved.size };
+}
+
+function loadWatchRows(supabase: SupabaseClient, userId: string, showTmdbId: number) {
+  return fetchAllRows<WatchRow>((from, to) =>
+    supabase
+      .from("episode_watches")
+      .select("id, season_number, episode_number, runtime_minutes, watched_at")
+      .eq("user_id", userId)
+      .eq("tmdb_show_id", showTmdbId)
+      .order("id")
+      .range(from, to)
+  );
+}
+
+async function fetchSeasons(showTmdbId: number, seasonNumbers: number[]) {
+  const seasons = await Promise.all(
+    seasonNumbers.map((n) => getSeason(showTmdbId, n).catch(() => null))
+  );
+  return seasons.filter((s) => s !== null);
 }
 
 /**
@@ -266,16 +283,15 @@ export async function setWatchedUpTo(input: {
   if (!user) throw new Error("Not signed in");
 
   const show = await getShow(input.showTmdbId);
-  const seasons = (
-    await Promise.all(
-      show.seasons
-        .filter((s) => s.season_number > 0 && s.episode_count > 0)
-        .map((s) => getSeason(input.showTmdbId, s.season_number).catch(() => null))
+  const index = buildEpisodeIndex(
+    await fetchSeasons(
+      input.showTmdbId,
+      show.seasons.filter((s) => s.season_number > 0 && s.episode_count > 0).map((s) => s.season_number)
     )
-  ).filter((s) => s !== null);
-  const index = buildEpisodeIndex(seasons);
+  );
 
-  await reconcileEpisodeNumbering(supabase, user.id, input.showTmdbId, index);
+  const rows = await loadWatchRows(supabase, user.id, input.showTmdbId);
+  await reconcileEpisodeNumbering(supabase, user.id, input.showTmdbId, rows, index);
 
   const targetIndex = index.order.findIndex(
     (ep) =>
@@ -293,7 +309,7 @@ export async function setWatchedUpTo(input: {
               ep.episode_number <= input.episodeNumber)
         );
 
-  const rows = upTo
+  const inserts = upTo
     .filter((ep) => isAired(ep.air_date))
     .map((ep) => ({
       user_id: user.id,
@@ -303,10 +319,10 @@ export async function setWatchedUpTo(input: {
       runtime_minutes: ep.runtime,
     }));
 
-  for (let i = 0; i < rows.length; i += 500) {
+  for (let i = 0; i < inserts.length; i += 500) {
     const { error } = await supabase
       .from("episode_watches")
-      .upsert(rows.slice(i, i + 500), {
+      .upsert(inserts.slice(i, i + 500), {
         onConflict: "user_id,tmdb_show_id,season_number,episode_number",
         ignoreDuplicates: true,
       });
@@ -315,6 +331,123 @@ export async function setWatchedUpTo(input: {
 
   await syncShowLibraryItem(supabase, user.id, input.showTmdbId, input.snapshot);
   revalidatePath("/", "layout");
+}
+
+/** Every show in the library, oldest first — the work list for a repair run. */
+export async function listShowsToRepair(): Promise<RepairTarget[]> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) throw new Error("Not signed in");
+
+  const items = await fetchAllRows<{ tmdb_id: number; title: string }>((from, to) =>
+    supabase
+      .from("library_items")
+      .select("tmdb_id, title, id")
+      .eq("user_id", user.id)
+      .eq("media_type", "tv")
+      .order("id")
+      .range(from, to)
+  );
+  return items.map((item) => ({ tmdbId: item.tmdb_id, title: item.title }));
+}
+
+/**
+ * Realigns one show's watch history to TMDB's numbering, pulling only as much
+ * of the show as it takes to tell: the seasons the history touches are enough
+ * to prove the numbering already matches, which is the answer for most shows.
+ */
+async function repairShow(
+  supabase: SupabaseClient,
+  userId: string,
+  item: LibraryItem
+): Promise<RepairResult> {
+  const base: RepairResult = { tmdbId: item.tmdb_id, title: item.title, moved: 0, dropped: 0 };
+  const rows = await loadWatchRows(supabase, userId, item.tmdb_id);
+  if (rows.length === 0) return base;
+
+  const show = await getShow(item.tmdb_id);
+  const touched = [...new Set(rows.map((row) => row.season_number))];
+  let seasons = await fetchSeasons(item.tmdb_id, touched);
+  let index = buildEpisodeIndex(seasons);
+
+  // Specials are never renumbered, so an odd one shouldn't drag in the rest of
+  // the show on every run.
+  const aligned = rows.every(
+    (row) =>
+      row.season_number <= 0 ||
+      index.byKey.has(episodeKey(row.season_number, row.episode_number))
+  );
+  if (aligned) return base;
+
+  const rest = show.seasons
+    .filter((s) => s.episode_count > 0 && !touched.includes(s.season_number))
+    .map((s) => s.season_number);
+  if (rest.length > 0) {
+    seasons = [...seasons, ...(await fetchSeasons(item.tmdb_id, rest))];
+    index = buildEpisodeIndex(seasons);
+  }
+
+  const { moved, dropped } = await reconcileEpisodeNumbering(
+    supabase,
+    userId,
+    item.tmdb_id,
+    rows,
+    index
+  );
+  if (moved > 0 || dropped > 0) {
+    await syncShowLibraryItem(supabase, userId, item.tmdb_id, {
+      title: item.title,
+      posterPath: item.poster_path,
+      releaseYear: item.release_year,
+      runtimeMinutes: item.runtime_minutes,
+      genreIds: item.genre_ids,
+      totalEpisodes: item.total_episodes,
+    });
+  }
+  return { ...base, moved, dropped };
+}
+
+/**
+ * Repairs a batch of shows. Batching is the caller's job: a whole library can
+ * mean hundreds of TMDB requests, well past what one request should carry.
+ */
+export async function repairShowNumbering(tmdbIds: number[]): Promise<RepairResult[]> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) throw new Error("Not signed in");
+  if (tmdbIds.length === 0 || tmdbIds.length > 10) {
+    throw new Error("Repair takes 1–10 shows at a time");
+  }
+
+  const { data, error } = await supabase
+    .from("library_items")
+    .select("*")
+    .eq("user_id", user.id)
+    .eq("media_type", "tv")
+    .in("tmdb_id", tmdbIds);
+  if (error) throw new Error(error.message);
+
+  const results: RepairResult[] = [];
+  for (const item of (data ?? []) as LibraryItem[]) {
+    try {
+      results.push(await repairShow(supabase, user.id, item));
+    } catch (err) {
+      results.push({
+        tmdbId: item.tmdb_id,
+        title: item.title,
+        moved: 0,
+        dropped: 0,
+        error: err instanceof Error ? err.message : "Unknown error",
+      });
+    }
+  }
+
+  if (results.some((r) => r.moved > 0 || r.dropped > 0)) revalidatePath("/", "layout");
+  return results;
 }
 
 export async function setSeasonWatched(input: {
