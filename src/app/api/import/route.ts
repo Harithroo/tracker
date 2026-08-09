@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { buildEpisodeIndex, mapToTmdbEpisode } from "@/lib/tmdb/episode-map";
+import type { SeasonDetails } from "@/lib/tmdb/types";
 import type { ImportItem, ImportItemResult, MovieImportItem, ShowImportItem } from "@/lib/import/types";
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
@@ -131,33 +133,76 @@ async function importShow(
     number_of_episodes: number;
     episode_run_time: number[];
     genres: { id: number }[];
+    seasons: { season_number: number; episode_count: number }[];
   }>(`/tv/${tmdbId}`).catch(() => null);
   const fallbackRuntime = details?.episode_run_time?.[0] ?? null;
   const totalEpisodes = details?.number_of_episodes ?? null;
 
-  // Per-episode runtimes for the seasons being imported
-  const runtimes = new Map<string, number | null>();
-  const seasons = [...new Set(item.episodes.map((e) => e.season))];
-  await Promise.all(
-    seasons.map(async (seasonNum) => {
-      const season = await tmdb<{ episodes: { episode_number: number; runtime: number | null }[] }>(
-        `/tv/${tmdbId}/season/${seasonNum}`
-      ).catch(() => null);
-      for (const ep of season?.episodes ?? []) {
-        runtimes.set(`${seasonNum}:${ep.episode_number}`, ep.runtime ?? fallbackRuntime);
-      }
-    })
+  const fetchSeasons = async (numbers: number[]): Promise<SeasonDetails[]> => {
+    const fetched = await Promise.all(
+      numbers.map((n) =>
+        tmdb<SeasonDetails>(`/tv/${tmdbId}/season/${n}`)
+          .then((season) => ({ ...season, season_number: n }))
+          .catch(() => null)
+      )
+    );
+    return fetched.filter((s) => s !== null);
+  };
+
+  // Start with the seasons the export mentions; that's enough to attach
+  // per-episode runtimes and, for most shows, to confirm the numbering matches.
+  const sourceSeasons = [...new Set(item.episodes.map((e) => e.season))];
+  let seasons = item.episodes.length > 0 ? await fetchSeasons(sourceSeasons) : [];
+  let index = buildEpisodeIndex(seasons);
+
+  // Sources number episodes their own way (TV Time follows TVDB), and TMDB
+  // re-splits seasons over time. When something doesn't line up, pull the whole
+  // show so episodes can be placed by position rather than dropped or, worse,
+  // stored under numbers no episode has.
+  const needsFullShow = item.episodes.some(
+    (ep) => !index.byKey.has(`${ep.season}:${ep.episode}`)
   );
+  if (needsFullShow) {
+    const rest = (details?.seasons ?? [])
+      .filter((s) => s.episode_count > 0 && !sourceSeasons.includes(s.season_number))
+      .map((s) => s.season_number);
+    if (rest.length > 0) {
+      seasons = [...seasons, ...(await fetchSeasons(rest))];
+      index = buildEpisodeIndex(seasons);
+    }
+  }
+
+  // Collapse to one row per TMDB episode — two source episodes can land on the
+  // same one when the season split differs — keeping the earliest watch.
+  const mapped = new Map<
+    string,
+    { season: number; episode: number; runtime: number | null; watchedAt: string }
+  >();
+  for (const ep of item.episodes) {
+    const match = mapToTmdbEpisode(index, ep.season, ep.episode);
+    const season = match?.season_number ?? ep.season;
+    const episode = match?.episode_number ?? ep.episode;
+    const watchedAt = ep.watchedAt ?? new Date().toISOString();
+    const key = `${season}:${episode}`;
+    const existing = mapped.get(key);
+    if (existing && existing.watchedAt <= watchedAt) continue;
+    mapped.set(key, {
+      season,
+      episode,
+      runtime: match?.runtime ?? fallbackRuntime,
+      watchedAt,
+    });
+  }
 
   let episodesImported = 0;
-  if (item.episodes.length > 0) {
-    const rows = item.episodes.map((ep) => ({
+  if (mapped.size > 0) {
+    const rows = [...mapped.values()].map((ep) => ({
       user_id: userId,
       tmdb_show_id: tmdbId,
       season_number: ep.season,
       episode_number: ep.episode,
-      runtime_minutes: runtimes.get(`${ep.season}:${ep.episode}`) ?? fallbackRuntime,
-      watched_at: ep.watchedAt ?? new Date().toISOString(),
+      runtime_minutes: ep.runtime,
+      watched_at: ep.watchedAt,
     }));
     for (let i = 0; i < rows.length; i += 500) {
       const { data, error } = await supabase
@@ -183,7 +228,7 @@ async function importShow(
     return { ...base, status: episodesImported > 0 ? "merged" : "skipped", episodesImported };
   }
 
-  const nonSpecial = item.episodes.filter((e) => e.season > 0).length;
+  const nonSpecial = [...mapped.values()].filter((e) => e.season > 0).length;
   const dates = item.episodes.map((e) => e.watchedAt).filter(Boolean).sort() as string[];
   const isComplete = totalEpisodes !== null && totalEpisodes > 0 && nonSpecial >= totalEpisodes;
   const status = item.archived

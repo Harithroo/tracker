@@ -4,6 +4,11 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSeason, getShow } from "@/lib/tmdb/client";
+import {
+  buildEpisodeIndex,
+  mapToTmdbEpisode,
+  type EpisodeIndex,
+} from "@/lib/tmdb/episode-map";
 import { isAired } from "@/lib/utils";
 import { airedEpisodeCount, episodeKey, isShowEnded, nextAiredEpisode } from "@/lib/progress";
 import { fetchAllRows } from "@/lib/supabase/fetch-all";
@@ -151,10 +156,102 @@ export async function setEpisodeWatched(input: {
   revalidatePath("/", "layout");
 }
 
+interface WatchRow {
+  id: string;
+  season_number: number;
+  episode_number: number;
+  runtime_minutes: number | null;
+  watched_at: string;
+}
+
 /**
- * Marks everything up to (and including) the given episode as watched — all
- * aired regular episodes of earlier seasons plus episodes 1..N of the target
- * season. Handy for logging old shows that are partway through.
+ * Rewrites the show's watch history into TMDB's current numbering.
+ *
+ * Imported histories carry their source's numbering, and TMDB re-splits seasons
+ * over time, so rows can end up pointing at episodes that no longer exist. Those
+ * rows are invisible in the episode list but still count towards progress, which
+ * is how a finished show keeps claiming an early episode is up next. Rows that
+ * can be translated are moved; rows matching no TMDB episode are dropped, since
+ * there is nothing they could refer to. Specials are left alone — they don't
+ * count towards progress and have no ordering to map through.
+ */
+async function reconcileEpisodeNumbering(
+  supabase: SupabaseClient,
+  userId: string,
+  showTmdbId: number,
+  index: EpisodeIndex
+) {
+  const rows = await fetchAllRows<WatchRow>((from, to) =>
+    supabase
+      .from("episode_watches")
+      .select("id, season_number, episode_number, runtime_minutes, watched_at")
+      .eq("user_id", userId)
+      .eq("tmdb_show_id", showTmdbId)
+      .order("id")
+      .range(from, to)
+  );
+
+  const staleIds: string[] = [];
+  // Several stale rows can translate to the same episode; keep the earliest.
+  const moved = new Map<string, { season: number; episode: number; row: WatchRow; runtime: number | null }>();
+  for (const row of rows) {
+    if (row.season_number <= 0) continue;
+    const key = episodeKey(row.season_number, row.episode_number);
+    if (index.byKey.has(key)) continue;
+
+    staleIds.push(row.id);
+    const match = mapToTmdbEpisode(index, row.season_number, row.episode_number);
+    if (!match) continue;
+    const target = episodeKey(match.season_number, match.episode_number);
+    const existing = moved.get(target);
+    if (!existing || row.watched_at < existing.row.watched_at) {
+      moved.set(target, {
+        season: match.season_number,
+        episode: match.episode_number,
+        row,
+        runtime: match.runtime ?? row.runtime_minutes,
+      });
+    }
+  }
+  if (staleIds.length === 0) return;
+
+  // Write the translated rows before dropping the originals, so a failure
+  // partway through leaves the history intact rather than short.
+  if (moved.size > 0) {
+    const inserts = [...moved.values()].map((m) => ({
+      user_id: userId,
+      tmdb_show_id: showTmdbId,
+      season_number: m.season,
+      episode_number: m.episode,
+      runtime_minutes: m.runtime,
+      watched_at: m.row.watched_at,
+    }));
+    for (let i = 0; i < inserts.length; i += 500) {
+      const { error } = await supabase
+        .from("episode_watches")
+        .upsert(inserts.slice(i, i + 500), {
+          onConflict: "user_id,tmdb_show_id,season_number,episode_number",
+          ignoreDuplicates: true,
+        });
+      if (error) throw new Error(error.message);
+    }
+  }
+
+  for (let i = 0; i < staleIds.length; i += 500) {
+    const { error } = await supabase
+      .from("episode_watches")
+      .delete()
+      .eq("user_id", userId)
+      .in("id", staleIds.slice(i, i + 500));
+    if (error) throw new Error(error.message);
+  }
+}
+
+/**
+ * Marks everything up to (and including) the given episode as watched, in air
+ * order across seasons. The show's existing history is realigned to TMDB's
+ * numbering first — otherwise this would stack a second, differently numbered
+ * copy of the same episodes on top of an imported one.
  */
 export async function setWatchedUpTo(input: {
   showTmdbId: number;
@@ -169,36 +266,50 @@ export async function setWatchedUpTo(input: {
   if (!user) throw new Error("Not signed in");
 
   const show = await getShow(input.showTmdbId);
-  const seasonNumbers = show.seasons
-    .filter((s) => s.season_number > 0 && s.season_number <= input.seasonNumber)
-    .map((s) => s.season_number);
+  const seasons = (
+    await Promise.all(
+      show.seasons
+        .filter((s) => s.season_number > 0 && s.episode_count > 0)
+        .map((s) => getSeason(input.showTmdbId, s.season_number).catch(() => null))
+    )
+  ).filter((s) => s !== null);
+  const index = buildEpisodeIndex(seasons);
 
-  const seasons = await Promise.all(
-    seasonNumbers.map((n) => getSeason(input.showTmdbId, n))
+  await reconcileEpisodeNumbering(supabase, user.id, input.showTmdbId, index);
+
+  const targetIndex = index.order.findIndex(
+    (ep) =>
+      ep.season_number === input.seasonNumber && ep.episode_number === input.episodeNumber
   );
+  const upTo =
+    targetIndex >= 0
+      ? index.order.slice(0, targetIndex + 1)
+      : // Target missing from the index (a season TMDB wouldn't serve): fall back
+        // to comparing numbers so the action still does something useful.
+        index.order.filter(
+          (ep) =>
+            ep.season_number < input.seasonNumber ||
+            (ep.season_number === input.seasonNumber &&
+              ep.episode_number <= input.episodeNumber)
+        );
 
-  const rows = seasons.flatMap((season) =>
-    season.episodes
-      .filter(
-        (ep) =>
-          isAired(ep.air_date) &&
-          (season.season_number < input.seasonNumber ||
-            ep.episode_number <= input.episodeNumber)
-      )
-      .map((ep) => ({
-        user_id: user.id,
-        tmdb_show_id: input.showTmdbId,
-        season_number: season.season_number,
-        episode_number: ep.episode_number,
-        runtime_minutes: ep.runtime,
-      }))
-  );
+  const rows = upTo
+    .filter((ep) => isAired(ep.air_date))
+    .map((ep) => ({
+      user_id: user.id,
+      tmdb_show_id: input.showTmdbId,
+      season_number: ep.season_number,
+      episode_number: ep.episode_number,
+      runtime_minutes: ep.runtime,
+    }));
 
-  if (rows.length > 0) {
-    const { error } = await supabase.from("episode_watches").upsert(rows, {
-      onConflict: "user_id,tmdb_show_id,season_number,episode_number",
-      ignoreDuplicates: true,
-    });
+  for (let i = 0; i < rows.length; i += 500) {
+    const { error } = await supabase
+      .from("episode_watches")
+      .upsert(rows.slice(i, i + 500), {
+        onConflict: "user_id,tmdb_show_id,season_number,episode_number",
+        ignoreDuplicates: true,
+      });
     if (error) throw new Error(error.message);
   }
 
