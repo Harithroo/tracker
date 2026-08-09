@@ -69,8 +69,8 @@ export function KeepWatchingRow({
             {code} · {episodeName}
           </p>
           <div className="mt-1.5 flex items-center gap-1.5">
-            <div className="h-0.5 flex-1 overflow-hidden rounded-full bg-neutral-800">
-              <div className="h-full bg-accent" style={{ width: `${pct}%` }} />
+            <div className="h-1.5 flex-1 rounded-full bg-neutral-800">
+              <div className="h-full rounded-full bg-accent" style={{ width: `${pct}%` }} />
             </div>
             {totalEpisodes ? (
               <span className="shrink-0 text-[11px] text-neutral-600">

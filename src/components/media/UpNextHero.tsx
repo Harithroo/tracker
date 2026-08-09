@@ -178,8 +178,8 @@ export function UpNextHero({
             </p>
             {pct !== null && (
               <div className="mt-1 flex items-center gap-2">
-                <div className="h-[3px] flex-1 overflow-hidden rounded-full bg-neutral-800">
-                  <div className="h-full bg-accent" style={{ width: `${pct}%` }} />
+                <div className="h-1.5 flex-1 rounded-full bg-neutral-800">
+                  <div className="h-full rounded-full bg-accent" style={{ width: `${pct}%` }} />
                 </div>
                 <span className="shrink-0 text-xs text-neutral-500">
                   {watchedCount} / {totalEpisodes}

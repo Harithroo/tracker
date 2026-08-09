@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { fetchAllRows } from "@/lib/supabase/fetch-all";
 import { getSeason, getShow, getTrending } from "@/lib/tmdb/client";
 import { getWeekSummary } from "@/lib/activity";
-import { episodeKey, nextAiredEpisode } from "@/lib/progress";
+import { episodeKey, nextAiredEpisode, resolveSlotEpisode } from "@/lib/progress";
 import {
   daysAgoIso,
   epCode,
@@ -93,16 +93,20 @@ export default async function HomePage() {
         if (next) {
           hasAiredNext.add(item.tmdb_id);
           // Pull the up-next episode's title/runtime so the card can show it and
-          // log an accurate runtime when marked watched.
+          // log an accurate runtime when marked watched. The season's own list
+          // is also what pins down the episode number for shows that number
+          // absolutely rather than restarting at 1 each season.
+          let seasonNumber = next.season;
+          let episodeNumber = next.episode;
           let name = "";
           let runtimeMinutes: number | null = null;
           let airDate: string | null = null;
           try {
             const season = await getSeason(item.tmdb_id, next.season);
-            const ep = season.episodes.find(
-              (e) => e.episode_number === next.episode
-            );
+            const ep = resolveSlotEpisode(season.episodes, next);
             if (ep) {
+              seasonNumber = ep.season_number;
+              episodeNumber = ep.episode_number;
               name = ep.name;
               runtimeMinutes = ep.runtime;
               airDate = ep.air_date;
@@ -111,12 +115,12 @@ export default async function HomePage() {
             // Episode detail unavailable — the card still shows the code.
           }
           upNext.set(item.tmdb_id, {
-            seasonNumber: next.season,
-            episodeNumber: next.episode,
+            seasonNumber,
+            episodeNumber,
             name,
             runtimeMinutes,
             airDate,
-            code: epCode(next.season, next.episode),
+            code: epCode(seasonNumber, episodeNumber),
             backdropPath: show.backdrop_path,
           });
         }
