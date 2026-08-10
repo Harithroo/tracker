@@ -83,9 +83,13 @@ export default async function ShowPage({
       runtimeMinutes: ep.runtime,
       aired: isAired(ep.air_date),
     })) ?? [];
-  const initialWatchedEpisodes = epRows
-    .filter((row) => row.season_number === defaultSeasonNumber)
-    .map((row) => row.episode_number);
+  // Every season's watched episodes, not just the one shown first: the episode
+  // list reads its ticks straight from here, so they stay correct after a
+  // revalidation instead of reverting to whatever was true on first render.
+  const watchedBySeason: Record<number, number[]> = {};
+  for (const row of epRows) {
+    (watchedBySeason[row.season_number] ??= []).push(row.episode_number);
+  }
 
   const recommendations = show.recommendations?.results?.slice(0, 12) ?? [];
 
@@ -159,7 +163,7 @@ export default async function ShowPage({
           }))}
           initialSeasonNumber={defaultSeasonNumber}
           initialEpisodes={initialEpisodes}
-          initialWatchedEpisodes={initialWatchedEpisodes}
+          watchedBySeason={watchedBySeason}
           snapshot={snapshot}
         />
       </section>
