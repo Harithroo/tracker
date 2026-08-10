@@ -26,8 +26,10 @@ export function QuickActionsSheet({
 }) {
   return (
     <Sheet open={open} onClose={onClose}>
-      <p className="mb-0.5 text-[17px] font-medium">{title}</p>
-      {subtitle && <p className="mb-4 text-sm text-neutral-500">{subtitle}</p>}
+      <div className="mb-4">
+        <p className="text-[17px] font-medium">{title}</p>
+        {subtitle && <p className="mt-0.5 text-sm text-neutral-500">{subtitle}</p>}
+      </div>
       <div className="flex flex-col gap-1.5">
         {actions.map((action) => (
           <button

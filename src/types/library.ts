@@ -48,6 +48,21 @@ export interface MediaSnapshot {
   totalEpisodes: number | null;
 }
 
+/** A show queued for an episode-numbering repair. */
+export interface RepairTarget {
+  tmdbId: number;
+  title: string;
+}
+
+/** What a repair run did to one show. */
+export interface RepairResult extends RepairTarget {
+  /** Watches renumbered onto the episode TMDB actually has. */
+  moved: number;
+  /** Watches matching no TMDB episode, so removed. */
+  dropped: number;
+  error?: string;
+}
+
 /**
  * User-selectable statuses. "completed" for shows is set automatically when
  * all aired episodes of an ended show are watched, and "dropped" only exists

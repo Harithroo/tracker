@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { posterUrl } from "@/lib/tmdb/images";
+import { cn } from "@/lib/utils";
 import type { MediaType, WatchStatus } from "@/types/library";
 import { CardMenu } from "./CardMenu";
 
@@ -58,7 +59,12 @@ export function PosterCard({
             </span>
           )}
           {indicators.length > 0 && (
-            <span className="absolute bottom-1.5 right-1.5 flex gap-1">
+            <span
+              className={cn(
+                "absolute right-1.5 flex gap-1",
+                progress !== undefined ? "bottom-5" : "bottom-1.5"
+              )}
+            >
               {indicators.map((ind) => (
                 <span
                   key={ind.key}
@@ -71,9 +77,11 @@ export function PosterCard({
             </span>
           )}
           {progress !== undefined && (
-            <div className="absolute inset-x-0 bottom-0 h-1 bg-black/60">
+            // Inset rather than flush to the bottom edge: a full-bleed bar gets
+            // eaten by the card's corner radius and reads as a broken line.
+            <div className="absolute inset-x-1.5 bottom-1.5 h-1 rounded-full bg-black/70 backdrop-blur">
               <div
-                className="h-full bg-accent"
+                className="h-full rounded-full bg-accent"
                 style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
               />
             </div>
@@ -83,7 +91,12 @@ export function PosterCard({
         {subtitle && <p className="text-xs text-muted">{subtitle}</p>}
       </Link>
       {quick && (
-        <CardMenu tmdbId={quick.tmdbId} mediaType={quick.mediaType} status={quick.status} />
+        <CardMenu
+          tmdbId={quick.tmdbId}
+          mediaType={quick.mediaType}
+          status={quick.status}
+          title={title}
+        />
       )}
     </div>
   );

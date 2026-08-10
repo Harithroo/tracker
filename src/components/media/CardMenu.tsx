@@ -1,94 +1,87 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { quickSetStatus } from "@/actions/library";
 import { cn } from "@/lib/utils";
+import { QuickActionsSheet, type QuickAction } from "@/components/ui/QuickActionsSheet";
 import type { MediaType, WatchStatus } from "@/types/library";
 
 interface MenuAction {
+  icon: string;
   label: string;
   status: WatchStatus | "remove";
+  primary?: boolean;
 }
 
 function actionsFor(mediaType: MediaType, status?: WatchStatus | null): MenuAction[] {
   const actions: MenuAction[] = [];
   if (mediaType === "movie") {
-    if (status !== "completed") actions.push({ label: "✓ Mark watched", status: "completed" });
-    if (!status) actions.push({ label: "+ Add to watchlist", status: "plan_to_watch" });
+    if (status !== "completed")
+      actions.push({ icon: "✓", label: "Mark watched", status: "completed", primary: true });
+    if (!status) actions.push({ icon: "+", label: "Add to watchlist", status: "plan_to_watch" });
   } else {
     if (!status || status === "plan_to_watch") {
-      actions.push({ label: "▶ Start watching", status: "watching" });
+      actions.push({ icon: "▶", label: "Start watching", status: "watching", primary: true });
     }
-    if (status === "on_hold") actions.push({ label: "▶ Resume watching", status: "watching" });
-    if (status === "watching") actions.push({ label: "⏸ Put on hold", status: "on_hold" });
-    if (!status) actions.push({ label: "+ Add to watchlist", status: "plan_to_watch" });
+    if (status === "on_hold")
+      actions.push({ icon: "▶", label: "Resume watching", status: "watching", primary: true });
+    if (status === "watching") actions.push({ icon: "⏸", label: "Put on hold", status: "on_hold" });
+    if (!status) actions.push({ icon: "+", label: "Add to watchlist", status: "plan_to_watch" });
   }
-  if (status) actions.push({ label: "✕ Remove from library", status: "remove" });
+  if (status) actions.push({ icon: "✕", label: "Remove from library", status: "remove" });
   return actions;
 }
 
+/**
+ * The ⋯ button on a poster. Actions open in the shared bottom sheet rather than
+ * an anchored dropdown — a dropdown wider than the poster spills over its
+ * neighbours and gets clipped by the carousel's horizontal scroll container.
+ */
 export function CardMenu({
   tmdbId,
   mediaType,
   status,
+  title,
 }: {
   tmdbId: number;
   mediaType: MediaType;
   status?: WatchStatus | null;
+  title: string;
 }) {
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
-  const rootRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", close);
-    return () => document.removeEventListener("pointerdown", close);
-  }, [open]);
-
-  function run(action: MenuAction) {
-    setOpen(false);
-    startTransition(() => quickSetStatus(tmdbId, mediaType, action.status));
-  }
+  const actions: QuickAction[] = actionsFor(mediaType, status).map((action) => ({
+    key: action.status,
+    icon: action.icon,
+    label: action.label,
+    primary: action.primary,
+    onSelect: () => startTransition(() => quickSetStatus(tmdbId, mediaType, action.status)),
+  }));
 
   return (
-    <div ref={rootRef} className="absolute right-1 top-1 z-10">
+    <>
       <button
         type="button"
-        aria-label="Quick actions"
+        aria-label={`Quick actions for ${title}`}
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          setOpen((v) => !v);
+          setOpen(true);
         }}
         className={cn(
-          "flex h-7 w-7 items-center justify-center rounded-md bg-black/60 text-sm leading-none text-white backdrop-blur transition-opacity hover:bg-black/80",
+          "absolute right-1 top-1 z-10 flex h-7 w-7 items-center justify-center rounded-md bg-black/60 text-sm leading-none text-white backdrop-blur transition-colors hover:bg-black/80",
           pending && "animate-pulse"
         )}
       >
         {pending ? "…" : "⋯"}
       </button>
-      {open && (
-        <div className="absolute right-0 top-8 w-44 overflow-hidden rounded-lg border border-border bg-surface-2 py-1 shadow-xl">
-          {actionsFor(mediaType, status).map((action) => (
-            <button
-              key={action.status}
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                run(action);
-              }}
-              className="block w-full px-3 py-2 text-left text-sm transition-colors hover:bg-surface"
-            >
-              {action.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+      <QuickActionsSheet
+        open={open}
+        onClose={() => setOpen(false)}
+        title={title}
+        actions={actions}
+      />
+    </>
   );
 }

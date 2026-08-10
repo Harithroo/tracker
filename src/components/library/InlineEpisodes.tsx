@@ -11,33 +11,49 @@ export interface SeasonPill {
   label: string;
 }
 
+/**
+ * Season picker over the episode list.
+ *
+ * Episode lists are cached client-side once fetched — they don't change from
+ * under us — but which episodes are watched always comes from the server prop.
+ * Holding that in state would freeze it at first render, and every tick would
+ * spring back the moment its server action finished and the optimistic update
+ * was handed back to a stale base.
+ */
 export function InlineEpisodes({
   showTmdbId,
   seasons,
   initialSeasonNumber,
   initialEpisodes,
-  initialWatchedEpisodes,
+  watchedBySeason,
   snapshot,
 }: {
   showTmdbId: number;
   seasons: SeasonPill[];
   initialSeasonNumber: number;
   initialEpisodes: EpisodeRow[];
-  initialWatchedEpisodes: number[];
+  watchedBySeason: Record<number, number[]>;
   snapshot: MediaSnapshot;
 }) {
   const [activeSeason, setActiveSeason] = useState(initialSeasonNumber);
-  const [episodes, setEpisodes] = useState(initialEpisodes);
-  const [watchedEpisodes, setWatchedEpisodes] = useState(initialWatchedEpisodes);
+  const [episodesBySeason, setEpisodesBySeason] = useState<Record<number, EpisodeRow[]>>({
+    [initialSeasonNumber]: initialEpisodes,
+  });
   const [pending, startTransition] = useTransition();
+
+  const episodes = episodesBySeason[activeSeason] ?? [];
+  const watchedEpisodes = watchedBySeason[activeSeason] ?? [];
 
   function selectSeason(seasonNumber: number) {
     if (seasonNumber === activeSeason || pending) return;
-    startTransition(async () => {
-      const data = await getSeasonEpisodes(showTmdbId, seasonNumber);
+    if (episodesBySeason[seasonNumber]) {
       setActiveSeason(seasonNumber);
-      setEpisodes(data.episodes);
-      setWatchedEpisodes(data.watchedEpisodes);
+      return;
+    }
+    startTransition(async () => {
+      const fetched = await getSeasonEpisodes(showTmdbId, seasonNumber);
+      setEpisodesBySeason((cache) => ({ ...cache, [seasonNumber]: fetched }));
+      setActiveSeason(seasonNumber);
     });
   }
 

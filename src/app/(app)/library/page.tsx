@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
 import { fetchAllRows } from "@/lib/supabase/fetch-all";
+import { getShowWatchCounts, type ShowWatchCount } from "@/lib/library/watch-counts";
 import { statusLabel, type MediaType, type WatchStatus } from "@/types/library";
 import { PosterCard } from "@/components/media/PosterCard";
 import { TabLink } from "@/components/ui/TabLink";
@@ -93,12 +94,8 @@ export default async function LibraryPage({
   // One aggregated row per show instead of paging through every episode watch
   const countsPromise =
     type === "movie"
-      ? Promise.resolve([])
-      : supabase
-          .from("episode_watch_counts")
-          .select("tmdb_show_id, watched_count")
-          .eq("user_id", userId)
-          .then(({ data }) => data ?? []);
+      ? Promise.resolve(new Map<number, ShowWatchCount>())
+      : getShowWatchCounts(supabase, userId);
 
   // Status/favorite counts (per selected type) for the filter pills
   const statsPromise = fetchAllRows<{ status: WatchStatus; favorite: boolean }>(
@@ -112,12 +109,11 @@ export default async function LibraryPage({
     }
   );
 
-  const [items, counts, stats] = await Promise.all([
+  const [items, watchedCounts, stats] = await Promise.all([
     itemsPromise,
     countsPromise,
     statsPromise,
   ]);
-  const watchedCounts = new Map(counts.map((c) => [c.tmdb_show_id, c.watched_count]));
 
   const tabCount = (value: string): number => {
     if (value === "all") return stats.length;
@@ -195,7 +191,7 @@ export default async function LibraryPage({
           </div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
             {items.map((item) => {
-              const watched = watchedCounts.get(item.tmdb_id) ?? 0;
+              const watched = watchedCounts.get(item.tmdb_id)?.watchedCount ?? 0;
               const progress =
                 item.media_type === "tv" &&
                 item.total_episodes &&

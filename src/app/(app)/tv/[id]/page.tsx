@@ -48,7 +48,12 @@ export default async function ShowPage({
   ]);
   if (!show) notFound();
 
-  const totalWatched = epRows.length;
+  // Specials are excluded: TMDB's number_of_episodes doesn't count them either,
+  // so including them here would push the bar past 100%.
+  const totalWatched = epRows.filter((row) => row.season_number > 0).length;
+  const watchedPct = show.number_of_episodes
+    ? Math.min(100, Math.round((totalWatched / show.number_of_episodes) * 100))
+    : 0;
   const watchedSet = new Set(epRows.map((row) => episodeKey(row.season_number, row.episode_number)));
 
   const snapshot: MediaSnapshot = {
@@ -78,9 +83,13 @@ export default async function ShowPage({
       runtimeMinutes: ep.runtime,
       aired: isAired(ep.air_date),
     })) ?? [];
-  const initialWatchedEpisodes = epRows
-    .filter((row) => row.season_number === defaultSeasonNumber)
-    .map((row) => row.episode_number);
+  // Every season's watched episodes, not just the one shown first: the episode
+  // list reads its ticks straight from here, so they stay correct after a
+  // revalidation instead of reverting to whatever was true on first render.
+  const watchedBySeason: Record<number, number[]> = {};
+  for (const row of epRows) {
+    (watchedBySeason[row.season_number] ??= []).push(row.episode_number);
+  }
 
   const recommendations = show.recommendations?.results?.slice(0, 12) ?? [];
 
@@ -134,13 +143,13 @@ export default async function ShowPage({
                 {totalWatched} of {show.number_of_episodes} episodes
               </span>
               <span className="text-[13px] font-medium text-accent-300">
-                {Math.round((totalWatched / show.number_of_episodes) * 100)}%
+                {watchedPct}%
               </span>
             </div>
-            <div className="h-1 overflow-hidden rounded-full bg-neutral-800">
+            <div className="h-1.5 rounded-full bg-neutral-800">
               <div
-                className="h-full bg-accent"
-                style={{ width: `${(totalWatched / show.number_of_episodes) * 100}%` }}
+                className="h-full rounded-full bg-accent"
+                style={{ width: `${watchedPct}%` }}
               />
             </div>
           </div>
@@ -154,7 +163,7 @@ export default async function ShowPage({
           }))}
           initialSeasonNumber={defaultSeasonNumber}
           initialEpisodes={initialEpisodes}
-          initialWatchedEpisodes={initialWatchedEpisodes}
+          watchedBySeason={watchedBySeason}
           snapshot={snapshot}
         />
       </section>

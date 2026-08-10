@@ -41,7 +41,11 @@ export function EpisodeList({
           : current.filter((n) => n !== action.episodeNumber);
       }
       if (action.type === "upTo") {
-        const upTo = Array.from({ length: action.episodeNumber }, (_, i) => i + 1);
+        // Take the numbers off the season itself — assuming they run 1..N ticks
+        // the wrong rows on shows TMDB numbers straight through.
+        const upTo = episodes
+          .filter((ep) => ep.episodeNumber <= action.episodeNumber)
+          .map((ep) => ep.episodeNumber);
         return [...new Set([...current, ...upTo])];
       }
       return action.watched
