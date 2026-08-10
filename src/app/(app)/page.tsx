@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { fetchAllRows } from "@/lib/supabase/fetch-all";
 import { getSeason, getShow, getTrending } from "@/lib/tmdb/client";
 import { getWeekSummary } from "@/lib/activity";
+import { getShowWatchCounts } from "@/lib/library/watch-counts";
 import { episodeKey, nextAiredEpisode, resolveSlotEpisode } from "@/lib/progress";
 import {
   daysAgoIso,
@@ -43,16 +44,9 @@ export default async function HomePage() {
   const tvIds = allWatching.filter((i) => i.media_type === "tv").map((i) => i.tmdb_id);
   const watchedCounts = new Map<number, number>();
   const lastWatched = new Map<number, string>();
-  if (tvIds.length > 0) {
-    const { data: counts } = await supabase
-      .from("episode_watch_counts")
-      .select("tmdb_show_id, watched_count, last_watched_at")
-      .eq("user_id", userId)
-      .in("tmdb_show_id", tvIds);
-    for (const row of counts ?? []) {
-      watchedCounts.set(row.tmdb_show_id, row.watched_count);
-      if (row.last_watched_at) lastWatched.set(row.tmdb_show_id, row.last_watched_at);
-    }
+  for (const [showId, count] of await getShowWatchCounts(supabase, userId, tvIds)) {
+    watchedCounts.set(showId, count.watchedCount);
+    if (count.lastWatchedAt) lastWatched.set(showId, count.lastWatchedAt);
   }
 
   const RECENT_DAYS = 60;
