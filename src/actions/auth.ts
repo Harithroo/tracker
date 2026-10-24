@@ -2,75 +2,22 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { cookies } from "next/headers";
+import { SESSION_COOKIE, adminAuth, getCurrentUser } from "@/lib/firebase/admin";
+import { profiles } from "@/lib/mongo/client";
 
 export type AuthFormState = { error?: string; message?: string } | undefined;
 
-function siteUrl() {
-  return process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
-}
-
-export async function login(
-  _prev: AuthFormState,
-  formData: FormData
-): Promise<AuthFormState> {
-  const email = String(formData.get("email") ?? "").trim();
-  const password = String(formData.get("password") ?? "");
-  if (!email || !password) return { error: "Email and password are required." };
-
-  const supabase = await createClient();
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) return { error: error.message };
-
-  redirect("/");
-}
-
-export async function signup(
-  _prev: AuthFormState,
-  formData: FormData
-): Promise<AuthFormState> {
-  const email = String(formData.get("email") ?? "").trim();
-  const password = String(formData.get("password") ?? "");
-  if (!email || !password) return { error: "Email and password are required." };
-  if (password.length < 8) return { error: "Password must be at least 8 characters." };
-
-  const supabase = await createClient();
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: { emailRedirectTo: `${siteUrl()}/auth/callback` },
-  });
-  if (error) return { error: error.message };
-
-  // If email confirmation is disabled in Supabase, a session exists immediately.
-  if (data.session) redirect("/");
-
-  return { message: "Check your email for a confirmation link." };
-}
-
+/**
+ * Signing in and resetting a password happen in the browser (the Firebase SDK
+ * is what mints an ID token), so only the session-bound operations are actions.
+ */
 export async function logout() {
-  const supabase = await createClient();
-  await supabase.auth.signOut();
+  const user = await getCurrentUser();
+  (await cookies()).delete(SESSION_COOKIE);
+  // Invalidates any other session cookie minted for this account.
+  if (user) await adminAuth().revokeRefreshTokens(user.id).catch(() => {});
   redirect("/login");
-}
-
-export async function requestPasswordReset(
-  _prev: AuthFormState,
-  formData: FormData
-): Promise<AuthFormState> {
-  const email = String(formData.get("email") ?? "").trim();
-  if (!email) return { error: "Email is required." };
-
-  const supabase = await createClient();
-  // Default Supabase email templates redirect with a PKCE ?code= param,
-  // which /auth/callback handles. (Customized token_hash templates would
-  // point at /auth/confirm instead — both routes exist.)
-  const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `${siteUrl()}/auth/callback?next=/update-password`,
-  });
-  if (error) return { error: error.message };
-
-  return { message: "Check your email for a password reset link." };
 }
 
 export async function updatePassword(
@@ -80,11 +27,16 @@ export async function updatePassword(
   const password = String(formData.get("password") ?? "");
   if (password.length < 8) return { error: "Password must be at least 8 characters." };
 
-  const supabase = await createClient();
-  const { error } = await supabase.auth.updateUser({ password });
-  if (error) return { error: error.message };
+  const user = await getCurrentUser();
+  if (!user) return { error: "Not signed in." };
 
-  redirect("/");
+  try {
+    await adminAuth().updateUser(user.id, { password });
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Couldn't update password." };
+  }
+
+  return { message: "Password updated." };
 }
 
 export async function updateUsername(
@@ -94,17 +46,10 @@ export async function updateUsername(
   const username = String(formData.get("username") ?? "").trim();
   if (!username) return { error: "Username can't be empty." };
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "Not signed in." };
 
-  const { error } = await supabase
-    .from("profiles")
-    .update({ username })
-    .eq("id", user.id);
-  if (error) return { error: error.message };
+  await (await profiles()).updateOne({ _id: user.id }, { $set: { username } });
 
   revalidatePath("/you");
   return { message: "Username updated." };

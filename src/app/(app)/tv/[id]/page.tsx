@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { fetchAllRows } from "@/lib/supabase/fetch-all";
+import { requireUser } from "@/lib/firebase/admin";
+import { episodeWatches, libraryItems } from "@/lib/mongo/client";
 import { getSeason, getShow } from "@/lib/tmdb/client";
 import { episodeKey, nextAiredEpisode } from "@/lib/progress";
 import { isAired, yearOf } from "@/lib/utils";
@@ -22,29 +22,23 @@ export default async function ShowPage({
   const showId = Number(id);
   if (!Number.isInteger(showId)) notFound();
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { id: userId } = await requireUser();
+  const items = await libraryItems();
 
-  const [show, itemResult, epRows] = await Promise.all([
+  const [show, item, epRows] = await Promise.all([
     getShow(showId).catch(() => null),
-    supabase
-      .from("library_items")
-      .select("status, rating, favorite, notes")
-      .eq("user_id", user!.id)
-      .eq("tmdb_id", showId)
-      .eq("media_type", "tv")
-      .maybeSingle(),
-    fetchAllRows<{ season_number: number; episode_number: number }>((from, to) =>
-      supabase
-        .from("episode_watches")
-        .select("season_number, episode_number")
-        .eq("user_id", user!.id)
-        .eq("tmdb_show_id", showId)
-        .order("id")
-        .range(from, to)
+    items.findOne(
+      { user_id: userId, tmdb_id: showId, media_type: "tv" },
+      { projection: { status: 1, rating: 1, favorite: 1, notes: 1, _id: 0 } }
     ),
+    (await episodeWatches())
+      .find({ user_id: userId, tmdb_show_id: showId })
+      .project<{ season_number: number; episode_number: number }>({
+        season_number: 1,
+        episode_number: 1,
+        _id: 0,
+      })
+      .toArray(),
   ]);
   if (!show) notFound();
 
@@ -96,16 +90,19 @@ export default async function ShowPage({
   // Library status for the recommendation cards' indicators/quick menus
   const recStatus = new Map<number, WatchStatus>();
   if (recommendations.length > 0) {
-    const { data: rows } = await supabase
-      .from("library_items")
-      .select("tmdb_id, status")
-      .eq("user_id", user!.id)
-      .eq("media_type", "tv")
-      .in(
-        "tmdb_id",
-        recommendations.map((r) => r.id)
-      );
-    for (const row of rows ?? []) recStatus.set(row.tmdb_id, row.status);
+    const rows = await items
+      .find({
+        user_id: userId,
+        media_type: "tv",
+        tmdb_id: { $in: recommendations.map((r) => r.id) },
+      })
+      .project<{ tmdb_id: number; status: WatchStatus }>({
+        tmdb_id: 1,
+        status: 1,
+        _id: 0,
+      })
+      .toArray();
+    for (const row of rows) recStatus.set(row.tmdb_id, row.status);
   }
 
   return (
@@ -131,7 +128,7 @@ export default async function ShowPage({
           tmdbId={showId}
           mediaType="tv"
           snapshot={snapshot}
-          item={itemResult.data}
+          item={item}
         />
       </DetailsHero>
 

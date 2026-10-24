@@ -1,5 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-import { fetchAllRows } from "./supabase/fetch-all";
+import { episodeWatches, libraryItems } from "./mongo/client";
 import { computeStreak, daysAgoIso } from "./utils";
 
 export interface WeekSummary {
@@ -9,45 +8,32 @@ export interface WeekSummary {
 }
 
 /** This-week (rolling 7 days) activity plus the running streak, for the Home page's summary band. */
-export async function getWeekSummary(
-  supabase: SupabaseClient,
-  userId: string
-): Promise<WeekSummary> {
+export async function getWeekSummary(userId: string): Promise<WeekSummary> {
   const cutoff = daysAgoIso(7);
+  const watches = await episodeWatches();
+  const items = await libraryItems();
 
   const [weekEpisodes, weekMovies, allEpisodeDates, allMovieDates] = await Promise.all([
-    supabase
-      .from("episode_watches")
-      .select("runtime_minutes")
-      .eq("user_id", userId)
-      .gte("watched_at", cutoff)
-      .then(({ data }) => data ?? []),
-    supabase
-      .from("library_items")
-      .select("runtime_minutes")
-      .eq("user_id", userId)
-      .eq("media_type", "movie")
-      .not("finished_at", "is", null)
-      .gte("finished_at", cutoff)
-      .then(({ data }) => data ?? []),
-    fetchAllRows<{ watched_at: string }>((from, to) =>
-      supabase
-        .from("episode_watches")
-        .select("watched_at, id")
-        .eq("user_id", userId)
-        .order("id")
-        .range(from, to)
-    ),
-    fetchAllRows<{ finished_at: string }>((from, to) =>
-      supabase
-        .from("library_items")
-        .select("finished_at, id")
-        .eq("user_id", userId)
-        .eq("media_type", "movie")
-        .not("finished_at", "is", null)
-        .order("id")
-        .range(from, to)
-    ),
+    watches
+      .find({ user_id: userId, watched_at: { $gte: cutoff } })
+      .project<{ runtime_minutes: number | null }>({ runtime_minutes: 1, _id: 0 })
+      .toArray(),
+    items
+      .find({
+        user_id: userId,
+        media_type: "movie",
+        finished_at: { $ne: null, $gte: cutoff },
+      })
+      .project<{ runtime_minutes: number | null }>({ runtime_minutes: 1, _id: 0 })
+      .toArray(),
+    watches
+      .find({ user_id: userId })
+      .project<{ watched_at: string }>({ watched_at: 1, _id: 0 })
+      .toArray(),
+    items
+      .find({ user_id: userId, media_type: "movie", finished_at: { $ne: null } })
+      .project<{ finished_at: string }>({ finished_at: 1, _id: 0 })
+      .toArray(),
   ]);
 
   const minutes =

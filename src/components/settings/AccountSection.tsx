@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { signOut } from "firebase/auth";
 import { logout, updatePassword, updateUsername } from "@/actions/auth";
 import { AuthForm } from "@/components/auth/AuthForm";
+import { firebaseAuth } from "@/lib/firebase/client";
 import { cn } from "@/lib/utils";
 import { ImportExport } from "./ImportExport";
 import { RepairNumbering } from "./RepairNumbering";
@@ -82,7 +84,14 @@ export function AccountSection({
         <RepairNumbering />
       </Row>
 
-      <form action={logout}>
+      {/* Clearing the browser SDK's own record too, so the next sign-in
+          doesn't silently reuse this account. */}
+      <form
+        action={async () => {
+          await signOut(firebaseAuth()).catch(() => {});
+          await logout();
+        }}
+      >
         <button
           type="submit"
           className="flex w-full items-center justify-between px-3.5 py-3.5 text-left text-sm text-[#e4a0a0] transition-colors hover:bg-black/10"

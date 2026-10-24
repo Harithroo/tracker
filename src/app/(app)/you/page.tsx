@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import { createClient } from "@/lib/supabase/server";
-import { fetchAllRows } from "@/lib/supabase/fetch-all";
+import { requireUser } from "@/lib/firebase/admin";
+import { episodeWatches, libraryItems, profiles } from "@/lib/mongo/client";
 import { genreName } from "@/lib/tmdb/genres";
 import { computeStreak, formatWatchTime, yearOf } from "@/lib/utils";
 import { AccountSection } from "@/components/settings/AccountSection";
@@ -22,30 +22,27 @@ interface EpisodeRow {
 }
 
 export default async function YouPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  const userId = user!.id;
+  const user = await requireUser();
+  const userId = user.id;
 
   const [items, episodes, profile] = await Promise.all([
-    fetchAllRows<ItemRow>((from, to) =>
-      supabase
-        .from("library_items")
-        .select("media_type, status, rating, runtime_minutes, genre_ids, finished_at, id")
-        .eq("user_id", userId)
-        .order("id")
-        .range(from, to)
-    ),
-    fetchAllRows<EpisodeRow>((from, to) =>
-      supabase
-        .from("episode_watches")
-        .select("runtime_minutes, watched_at, id")
-        .eq("user_id", userId)
-        .order("id")
-        .range(from, to)
-    ),
-    supabase.from("profiles").select("username").eq("id", userId).single(),
+    (await libraryItems())
+      .find({ user_id: userId })
+      .project<ItemRow>({
+        media_type: 1,
+        status: 1,
+        rating: 1,
+        runtime_minutes: 1,
+        genre_ids: 1,
+        finished_at: 1,
+        _id: 0,
+      })
+      .toArray(),
+    (await episodeWatches())
+      .find({ user_id: userId })
+      .project<EpisodeRow>({ runtime_minutes: 1, watched_at: 1, _id: 0 })
+      .toArray(),
+    (await profiles()).findOne({ _id: userId }),
   ]);
 
   const movies = items.filter((i) => i.media_type === "movie");
@@ -118,9 +115,9 @@ export default async function YouPage() {
     { value: items.length.toLocaleString(), label: "Titles tracked" },
   ];
 
-  const username = profile.data?.username ?? user!.email ?? "you";
+  const username = profile?.username ?? user.email ?? "you";
   const initial = username.slice(0, 1).toUpperCase();
-  const memberSinceYear = yearOf(user!.created_at);
+  const memberSinceYear = yearOf(profile?.created_at);
   const completedCount = completedMovies.length + completedShows.length;
 
   return (
@@ -229,7 +226,7 @@ export default async function YouPage() {
         <h2 className="mb-2.5 text-[13px] font-semibold uppercase tracking-[0.1em] text-neutral-500">
           Account
         </h2>
-        <AccountSection username={username} email={user!.email ?? ""} />
+        <AccountSection username={username} email={user.email ?? ""} />
       </section>
     </div>
   );

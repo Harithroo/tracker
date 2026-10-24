@@ -1,36 +1,40 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { fetchAllRows } from "@/lib/supabase/fetch-all";
+import { getCurrentUser } from "@/lib/firebase/admin";
+import { episodeWatches, libraryItems } from "@/lib/mongo/client";
 import { BACKUP_FORMAT } from "@/lib/import/backup";
 
 export async function GET() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
 
   let library, episodes;
   try {
     [library, episodes] = await Promise.all([
-      fetchAllRows((from, to) =>
-        supabase
-          .from("library_items")
-          .select(
-            "tmdb_id, media_type, status, rating, favorite, notes, started_at, finished_at, title"
-          )
-          .eq("user_id", user.id)
-          .order("id")
-          .range(from, to)
-      ),
-      fetchAllRows((from, to) =>
-        supabase
-          .from("episode_watches")
-          .select("tmdb_show_id, season_number, episode_number, watched_at")
-          .eq("user_id", user.id)
-          .order("id")
-          .range(from, to)
-      ),
+      (await libraryItems())
+        .find({ user_id: user.id })
+        .project({
+          _id: 0,
+          tmdb_id: 1,
+          media_type: 1,
+          status: 1,
+          rating: 1,
+          favorite: 1,
+          notes: 1,
+          started_at: 1,
+          finished_at: 1,
+          title: 1,
+        })
+        .toArray(),
+      (await episodeWatches())
+        .find({ user_id: user.id })
+        .project({
+          _id: 0,
+          tmdb_show_id: 1,
+          season_number: 1,
+          episode_number: 1,
+          watched_at: 1,
+        })
+        .toArray(),
     ]);
   } catch (err) {
     return NextResponse.json(
