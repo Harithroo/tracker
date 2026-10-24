@@ -11,7 +11,11 @@ export function detectAndParse(files: Map<string, string>): ImportPlan {
   const names = [...files.keys()];
   const has = (pattern: RegExp) => names.some((n) => pattern.test(n));
 
-  if (has(/^watched-shows\.json$/) || has(/^watched-movies-\d+\.json$/)) {
+  if (
+    has(/^watched-shows\.json$/) ||
+    has(/^watched-movies-\d+\.json$/) ||
+    has(/^watched-history-\d+\.json$/)
+  ) {
     return { source: "trakt", items: parseTrakt(files) };
   }
 

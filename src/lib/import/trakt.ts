@@ -1,4 +1,9 @@
-import type { ImportItem, MovieImportItem, ShowImportItem } from "./types";
+import type {
+  EpisodeImportItem,
+  ImportItem,
+  MovieImportItem,
+  ShowImportItem,
+} from "./types";
 
 interface TraktIds {
   tmdb?: number;
@@ -8,25 +13,32 @@ interface TraktIds {
 
 /**
  * Parses a Trakt account export (the zip from trakt.tv/settings/data).
- * Uses the aggregated files — watched-shows.json has every episode watch with
- * TMDB-native numbering, watched-movies-N.json every movie play.
+ * watched-shows.json and watched-movies-N.json give the library, and
+ * watched-history-N.json the individual plays. Exports vary: some ship the
+ * season breakdown inside watched-shows.json, others only list the show there
+ * and leave every episode number to the history files, so both are read and
+ * merged.
  */
 export function parseTrakt(files: Map<string, string>): ImportItem[] {
   const read = <T>(name: string): T | null => {
     const text = files.get(name);
     return text ? (JSON.parse(text) as T) : null;
   };
+  const paginated = (prefix: string) =>
+    [...files.keys()]
+      .filter((n) => new RegExp(`^${prefix}-\\d+\\.json$`).test(n))
+      .sort();
 
   const movies = new Map<string, MovieImportItem>();
   const shows = new Map<string, ShowImportItem>();
-  const movieKey = (ids: TraktIds, title: string) =>
+  const mediaKey = (ids: TraktIds, title: string) =>
     ids.tmdb ? `tmdb:${ids.tmdb}` : ids.imdb ? `imdb:${ids.imdb}` : `title:${title}`;
 
   // --- watched movies (paginated) -------------------------------------------
-  for (const name of [...files.keys()].filter((n) => /^watched-movies-\d+\.json$/.test(n))) {
+  for (const name of paginated("watched-movies")) {
     for (const entry of read<TraktWatchedMovie[]>(name) ?? []) {
       const m = entry.movie;
-      movies.set(movieKey(m.ids, m.title), {
+      movies.set(mediaKey(m.ids, m.title), {
         kind: "movie",
         tmdbId: m.ids.tmdb,
         imdbId: m.ids.imdb,
@@ -37,30 +49,80 @@ export function parseTrakt(files: Map<string, string>): ImportItem[] {
     }
   }
 
-  // --- watched shows with per-episode watches --------------------------------
+  // --- watched shows ----------------------------------------------------------
+  const showEpisodes = new Map<string, Map<string, EpisodeImportItem>>();
+  /** Keeps the earliest watch per season/episode across both sources. */
+  const addEpisode = (key: string, season: number, episode: number, watchedAt?: string | null) => {
+    let byNumber = showEpisodes.get(key);
+    if (!byNumber) showEpisodes.set(key, (byNumber = new Map()));
+    const slot = `${season}:${episode}`;
+    const existing = byNumber.get(slot);
+    if (existing && (!watchedAt || (existing.watchedAt && existing.watchedAt <= watchedAt))) return;
+    byNumber.set(slot, { season, episode, watchedAt: watchedAt ?? null });
+  };
+
+  const registerShow = (s: TraktMedia) => {
+    const key = mediaKey(s.ids, s.title);
+    if (!shows.has(key)) {
+      shows.set(key, {
+        kind: "show",
+        tmdbId: s.ids.tmdb,
+        tvdbId: s.ids.tvdb,
+        imdbId: s.ids.imdb,
+        title: s.title,
+        year: s.year ?? null,
+        episodes: [],
+      });
+    }
+    return key;
+  };
+
   for (const entry of read<TraktWatchedShow[]>("watched-shows.json") ?? []) {
-    const s = entry.show;
-    shows.set(movieKey(s.ids, s.title), {
-      kind: "show",
-      tmdbId: s.ids.tmdb,
-      tvdbId: s.ids.tvdb,
-      imdbId: s.ids.imdb,
-      title: s.title,
-      year: s.year ?? null,
-      episodes: entry.seasons.flatMap((season) =>
-        season.episodes.map((ep) => ({
-          season: season.number,
-          episode: ep.number,
-          watchedAt: ep.last_watched_at ?? null,
-        }))
-      ),
-    });
+    const key = registerShow(entry.show);
+    for (const season of entry.seasons ?? []) {
+      for (const ep of season.episodes ?? []) {
+        addEpisode(key, season.number, ep.number, ep.last_watched_at);
+      }
+    }
+  }
+
+  // --- play history (paginated) ----------------------------------------------
+  // The only place episode numbers appear in exports whose watched-shows.json
+  // carries no season breakdown. Movie plays here back-fill anything the
+  // aggregated movie pages missed.
+  for (const name of paginated("watched-history")) {
+    for (const entry of read<TraktHistoryEntry[]>(name) ?? []) {
+      if (entry.type === "episode" && entry.show && entry.episode) {
+        const { season, number } = entry.episode;
+        if (typeof season !== "number" || typeof number !== "number") continue;
+        addEpisode(registerShow(entry.show), season, number, entry.watched_at);
+      } else if (entry.type === "movie" && entry.movie) {
+        const m = entry.movie;
+        const key = mediaKey(m.ids, m.title);
+        const existing = movies.get(key);
+        if (existing?.watchedAt) continue;
+        movies.set(key, {
+          ...existing,
+          kind: "movie",
+          tmdbId: m.ids.tmdb,
+          imdbId: m.ids.imdb,
+          title: m.title,
+          year: m.year ?? null,
+          watchedAt: entry.watched_at ?? null,
+        });
+      }
+    }
+  }
+
+  for (const [key, byNumber] of showEpisodes) {
+    const show = shows.get(key);
+    if (show) show.episodes = [...byNumber.values()];
   }
 
   // --- watchlist --------------------------------------------------------------
   for (const entry of read<TraktWatchlistEntry[]>("lists-watchlist.json") ?? []) {
     if (entry.type === "movie" && entry.movie) {
-      const key = movieKey(entry.movie.ids, entry.movie.title);
+      const key = mediaKey(entry.movie.ids, entry.movie.title);
       if (!movies.has(key)) {
         movies.set(key, {
           kind: "movie",
@@ -72,7 +134,7 @@ export function parseTrakt(files: Map<string, string>): ImportItem[] {
         });
       }
     } else if (entry.type === "show" && entry.show) {
-      const key = movieKey(entry.show.ids, entry.show.title);
+      const key = mediaKey(entry.show.ids, entry.show.title);
       if (!shows.has(key)) {
         shows.set(key, {
           kind: "show",
@@ -90,7 +152,7 @@ export function parseTrakt(files: Map<string, string>): ImportItem[] {
   // --- ratings -----------------------------------------------------------------
   for (const entry of read<TraktRating[]>("ratings-movies.json") ?? []) {
     if (!entry.movie) continue;
-    const key = movieKey(entry.movie.ids, entry.movie.title);
+    const key = mediaKey(entry.movie.ids, entry.movie.title);
     const existing = movies.get(key);
     if (existing) existing.rating = entry.rating;
     else
@@ -106,7 +168,7 @@ export function parseTrakt(files: Map<string, string>): ImportItem[] {
   }
   for (const entry of read<TraktRating[]>("ratings-shows.json") ?? []) {
     if (!entry.show) continue;
-    const existing = shows.get(movieKey(entry.show.ids, entry.show.title));
+    const existing = shows.get(mediaKey(entry.show.ids, entry.show.title));
     if (existing) existing.rating = entry.rating;
   }
 
@@ -124,10 +186,18 @@ interface TraktWatchedMovie {
 }
 interface TraktWatchedShow {
   show: TraktMedia;
-  seasons: {
+  /** Absent in exports that only list the show; episodes come from history. */
+  seasons?: {
     number: number;
-    episodes: { number: number; last_watched_at?: string }[];
+    episodes?: { number: number; last_watched_at?: string }[];
   }[];
+}
+interface TraktHistoryEntry {
+  watched_at?: string;
+  type: "episode" | "movie" | string;
+  episode?: { season?: number; number?: number };
+  show?: TraktMedia;
+  movie?: TraktMedia;
 }
 interface TraktWatchlistEntry {
   type: "movie" | "show" | string;
