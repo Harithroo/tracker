@@ -29,6 +29,14 @@ Personal movie & TV show tracker — a TV Time replacement. Next.js (App Router)
 
 Confirmation and password-reset emails are sent and handled by Firebase — there are no email templates to edit and no mail provider to wire up.
 
+An email/password account can't log in until its address is confirmed (`Check your email for a confirmation link before logging in.`). The login screen offers **Resend confirmation email** when that happens. If the mail still doesn't arrive, confirm the account directly:
+
+```bash
+npm run user:verify -- you@example.com
+```
+
+Google sign-in skips confirmation entirely — Google has already verified the address.
+
 ### 3. TMDB
 
 1. Create a free account at [themoviedb.org](https://www.themoviedb.org/signup).
