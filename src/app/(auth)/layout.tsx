@@ -6,7 +6,16 @@ export default async function AuthLayout({
 }: {
   children: React.ReactNode;
 }) {
-  if (await getCurrentUser()) redirect("/");
+  let signedIn = false;
+  try {
+    signedIn = (await getCurrentUser()) !== null;
+  } catch (err) {
+    // Redirecting a signed-in visitor away is a convenience, not a gate, so a
+    // broken service account must not take the login page down with it —
+    // anyone holding a stale cookie would have no way back in.
+    console.error("Could not verify the session cookie on an auth page:", err);
+  }
+  if (signedIn) redirect("/");
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4">

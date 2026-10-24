@@ -26,7 +26,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing idToken" }, { status: 400 });
   }
 
-  const auth = adminAuth();
+  let auth;
+  try {
+    auth = adminAuth();
+  } catch (err) {
+    // A missing service account is a deployment problem, not a bad password:
+    // say so in the shape the form can render instead of crashing the route.
+    console.error("Firebase Admin is unavailable:", err);
+    return NextResponse.json(
+      { error: "Sign-in is misconfigured on the server. Check the logs." },
+      { status: 500 }
+    );
+  }
+
   let decoded;
   try {
     decoded = await auth.verifyIdToken(idToken);
