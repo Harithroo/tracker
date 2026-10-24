@@ -1,6 +1,7 @@
 "use server";
 
-import { createClient } from "@/lib/supabase/server";
+import { getCurrentUser } from "@/lib/firebase/admin";
+import { libraryItems } from "@/lib/mongo/client";
 import { searchMulti } from "@/lib/tmdb/client";
 import { yearOf } from "@/lib/utils";
 import type { MediaType, WatchStatus } from "@/types/library";
@@ -26,20 +27,18 @@ export async function quickSearch(query: string): Promise<QuickSearchResult[]> {
   if (results.length === 0) return [];
 
   const statusMap = new Map<string, WatchStatus>();
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (user) {
-    const { data: rows } = await supabase
-      .from("library_items")
-      .select("tmdb_id, media_type, status")
-      .eq("user_id", user.id)
-      .in(
-        "tmdb_id",
-        results.map((r) => r.id)
-      );
-    for (const row of rows ?? []) {
+    const rows = await (await libraryItems())
+      .find({ user_id: user.id, tmdb_id: { $in: results.map((r) => r.id) } })
+      .project<{ tmdb_id: number; media_type: MediaType; status: WatchStatus }>({
+        tmdb_id: 1,
+        media_type: 1,
+        status: 1,
+        _id: 0,
+      })
+      .toArray();
+    for (const row of rows) {
       statusMap.set(`${row.media_type}:${row.tmdb_id}`, row.status);
     }
   }

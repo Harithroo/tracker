@@ -1,7 +1,8 @@
 import Image from "next/image";
 import Link from "next/link";
 import type { Metadata } from "next";
-import { createClient } from "@/lib/supabase/server";
+import { requireUser } from "@/lib/firebase/admin";
+import { episodeWatches, libraryItems } from "@/lib/mongo/client";
 import { getShow } from "@/lib/tmdb/client";
 import { posterUrl } from "@/lib/tmdb/images";
 import { epCode, formatDate } from "@/lib/utils";
@@ -27,25 +28,29 @@ interface HistoryEntry {
 }
 
 export default async function CalendarPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  const userId = user!.id;
+  const { id: userId } = await requireUser();
+  const items = await libraryItems();
 
   // Shows we're tracking — their next episode to air feeds "Upcoming"
-  const { data: trackedShows } = await supabase
-    .from("library_items")
-    .select("tmdb_id, title, poster_path, status")
-    .eq("user_id", userId)
-    .eq("media_type", "tv")
-    .in("status", ["watching", "on_hold", "plan_to_watch"])
-    .order("updated_at", { ascending: false })
-    .limit(40);
+  const trackedShows = await items
+    .find({
+      user_id: userId,
+      media_type: "tv",
+      status: { $in: ["watching", "on_hold", "plan_to_watch"] },
+    })
+    .sort({ updated_at: -1 })
+    .limit(40)
+    .project<{ tmdb_id: number; title: string; poster_path: string | null }>({
+      tmdb_id: 1,
+      title: 1,
+      poster_path: 1,
+      _id: 0,
+    })
+    .toArray();
 
   const upcoming: UpcomingEntry[] = [];
   await Promise.all(
-    (trackedShows ?? []).map(async (item) => {
+    trackedShows.map(async (item) => {
       try {
         const show = await getShow(item.tmdb_id);
         const next = show.next_episode_to_air;
@@ -67,40 +72,57 @@ export default async function CalendarPage() {
   upcoming.sort((a, b) => a.airDate.localeCompare(b.airDate));
 
   // Watch history: recent episode watches + movie finishes
-  const [{ data: recentEpisodes }, { data: finishedMovies }] = await Promise.all([
-    supabase
-      .from("episode_watches")
-      .select("tmdb_show_id, season_number, episode_number, watched_at")
-      .eq("user_id", userId)
-      .order("watched_at", { ascending: false })
-      .limit(100),
-    supabase
-      .from("library_items")
-      .select("tmdb_id, media_type, title, poster_path, finished_at")
-      .eq("user_id", userId)
-      .eq("media_type", "movie")
-      .not("finished_at", "is", null)
-      .order("finished_at", { ascending: false })
-      .limit(50),
+  const [recentEpisodes, finishedMovies] = await Promise.all([
+    (await episodeWatches())
+      .find({ user_id: userId })
+      .sort({ watched_at: -1 })
+      .limit(100)
+      .project<{
+        tmdb_show_id: number;
+        season_number: number;
+        episode_number: number;
+        watched_at: string;
+      }>({
+        tmdb_show_id: 1,
+        season_number: 1,
+        episode_number: 1,
+        watched_at: 1,
+        _id: 0,
+      })
+      .toArray(),
+    items
+      .find({ user_id: userId, media_type: "movie", finished_at: { $ne: null } })
+      .sort({ finished_at: -1 })
+      .limit(50)
+      .project<{
+        tmdb_id: number;
+        title: string;
+        poster_path: string | null;
+        finished_at: string;
+      }>({ tmdb_id: 1, title: 1, poster_path: 1, finished_at: 1, _id: 0 })
+      .toArray(),
   ]);
 
   // Show titles/posters for the episode rows
-  const showIds = [...new Set((recentEpisodes ?? []).map((e) => e.tmdb_show_id))];
+  const showIds = [...new Set(recentEpisodes.map((e) => e.tmdb_show_id))];
   const showInfo = new Map<number, { title: string; poster_path: string | null }>();
   if (showIds.length > 0) {
-    const { data: rows } = await supabase
-      .from("library_items")
-      .select("tmdb_id, title, poster_path")
-      .eq("user_id", userId)
-      .eq("media_type", "tv")
-      .in("tmdb_id", showIds);
-    for (const row of rows ?? []) {
+    const rows = await items
+      .find({ user_id: userId, media_type: "tv", tmdb_id: { $in: showIds } })
+      .project<{ tmdb_id: number; title: string; poster_path: string | null }>({
+        tmdb_id: 1,
+        title: 1,
+        poster_path: 1,
+        _id: 0,
+      })
+      .toArray();
+    for (const row of rows) {
       showInfo.set(row.tmdb_id, { title: row.title, poster_path: row.poster_path });
     }
   }
 
   const history: HistoryEntry[] = [
-    ...(recentEpisodes ?? []).map((ep) => ({
+    ...recentEpisodes.map((ep) => ({
       key: `ep-${ep.tmdb_show_id}-${ep.season_number}-${ep.episode_number}`,
       href: `/tv/${ep.tmdb_show_id}`,
       title: showInfo.get(ep.tmdb_show_id)?.title ?? `Show #${ep.tmdb_show_id}`,
@@ -108,13 +130,13 @@ export default async function CalendarPage() {
       detail: epCode(ep.season_number, ep.episode_number),
       date: ep.watched_at.slice(0, 10),
     })),
-    ...(finishedMovies ?? []).map((m) => ({
+    ...finishedMovies.map((m) => ({
       key: `movie-${m.tmdb_id}`,
       href: `/movie/${m.tmdb_id}`,
       title: m.title,
       posterPath: m.poster_path,
       detail: "Movie",
-      date: m.finished_at!.slice(0, 10),
+      date: m.finished_at.slice(0, 10),
     })),
   ]
     .sort((a, b) => b.date.localeCompare(a.date))

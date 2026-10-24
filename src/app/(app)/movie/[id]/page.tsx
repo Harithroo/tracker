@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { requireUser } from "@/lib/firebase/admin";
+import { libraryItems } from "@/lib/mongo/client";
 import { getMovie } from "@/lib/tmdb/client";
 import { formatRuntime, yearOf } from "@/lib/utils";
 import type { MediaSnapshot, WatchStatus } from "@/types/library";
@@ -18,20 +19,15 @@ export default async function MoviePage({
   const movieId = Number(id);
   if (!Number.isInteger(movieId)) notFound();
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { id: userId } = await requireUser();
+  const items = await libraryItems();
 
-  const [movie, itemResult] = await Promise.all([
+  const [movie, item] = await Promise.all([
     getMovie(movieId).catch(() => null),
-    supabase
-      .from("library_items")
-      .select("status, rating, favorite, notes")
-      .eq("user_id", user!.id)
-      .eq("tmdb_id", movieId)
-      .eq("media_type", "movie")
-      .maybeSingle(),
+    items.findOne(
+      { user_id: userId, tmdb_id: movieId, media_type: "movie" },
+      { projection: { status: 1, rating: 1, favorite: 1, notes: 1, _id: 0 } }
+    ),
   ]);
   if (!movie) notFound();
 
@@ -49,16 +45,19 @@ export default async function MoviePage({
   // Library status for the recommendation cards' indicators/quick menus
   const recStatus = new Map<number, WatchStatus>();
   if (recommendations.length > 0) {
-    const { data: rows } = await supabase
-      .from("library_items")
-      .select("tmdb_id, status")
-      .eq("user_id", user!.id)
-      .eq("media_type", "movie")
-      .in(
-        "tmdb_id",
-        recommendations.map((r) => r.id)
-      );
-    for (const row of rows ?? []) recStatus.set(row.tmdb_id, row.status);
+    const rows = await items
+      .find({
+        user_id: userId,
+        media_type: "movie",
+        tmdb_id: { $in: recommendations.map((r) => r.id) },
+      })
+      .project<{ tmdb_id: number; status: WatchStatus }>({
+        tmdb_id: 1,
+        status: 1,
+        _id: 0,
+      })
+      .toArray();
+    for (const row of rows) recStatus.set(row.tmdb_id, row.status);
   }
 
   return (
@@ -82,7 +81,7 @@ export default async function MoviePage({
           tmdbId={movieId}
           mediaType="movie"
           snapshot={snapshot}
-          item={itemResult.data}
+          item={item}
         />
       </DetailsHero>
 

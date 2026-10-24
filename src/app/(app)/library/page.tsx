@@ -1,7 +1,9 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import { createClient } from "@/lib/supabase/server";
-import { fetchAllRows } from "@/lib/supabase/fetch-all";
+import type { Filter, Sort, WithId } from "mongodb";
+import { requireUser } from "@/lib/firebase/admin";
+import { libraryItems } from "@/lib/mongo/client";
+import { withId, type LibraryItemDoc } from "@/lib/mongo/collections";
 import { getShowWatchCounts, type ShowWatchCount } from "@/lib/library/watch-counts";
 import { statusLabel, type MediaType, type WatchStatus } from "@/types/library";
 import { PosterCard } from "@/components/media/PosterCard";
@@ -66,48 +68,61 @@ export default async function LibraryPage({
 }) {
   const { type = "all", filter = "all", sort = "recent" } = await searchParams;
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  const userId = user!.id;
+  const { id: userId } = await requireUser();
+  const collection = await libraryItems();
 
-  const itemsPromise = fetchAllRows<LibraryRow>((from, to) => {
-    let query = supabase
-      .from("library_items")
-      .select(
-        "id, tmdb_id, media_type, status, rating, title, poster_path, release_year, total_episodes"
-      )
-      .eq("user_id", userId);
-    if (type === "movie" || type === "tv") query = query.eq("media_type", type);
-    if (filter === "favorites") query = query.eq("favorite", true);
-    else if (STATUS_VALUES.includes(filter as WatchStatus)) query = query.eq("status", filter);
-    if (sort === "title") query = query.order("title", { ascending: true });
-    else if (sort === "year")
-      query = query.order("release_year", { ascending: false, nullsFirst: false });
-    else if (sort === "rating")
-      query = query.order("rating", { ascending: false, nullsFirst: false });
-    else query = query.order("updated_at", { ascending: false });
-    return query.order("id").range(from, to);
-  });
+  const typeFilter: Filter<LibraryItemDoc> =
+    type === "movie" || type === "tv"
+      ? { user_id: userId, media_type: type }
+      : { user_id: userId };
 
-  // One aggregated row per show instead of paging through every episode watch
+  const query: Filter<LibraryItemDoc> = { ...typeFilter };
+  if (filter === "favorites") query.favorite = true;
+  else if (STATUS_VALUES.includes(filter as WatchStatus)) {
+    query.status = filter as WatchStatus;
+  }
+
+  // _id is the tiebreaker, so equal keys keep a stable order between loads.
+  const order: Sort =
+    sort === "title"
+      ? { title: 1, _id: 1 }
+      : sort === "year"
+        ? { release_year: -1, _id: 1 }
+        : sort === "rating"
+          ? { rating: -1, _id: 1 }
+          : { updated_at: -1, _id: 1 };
+
+  const itemsPromise = collection
+    .find(query)
+    .sort(order)
+    .project<WithId<Omit<LibraryRow, "id">>>({
+      tmdb_id: 1,
+      media_type: 1,
+      status: 1,
+      rating: 1,
+      title: 1,
+      poster_path: 1,
+      release_year: 1,
+      total_episodes: 1,
+    })
+    .toArray()
+    .then((docs) => docs.map(withId));
+
+  // One aggregated row per show instead of reading every episode watch
   const countsPromise =
     type === "movie"
       ? Promise.resolve(new Map<number, ShowWatchCount>())
-      : getShowWatchCounts(supabase, userId);
+      : getShowWatchCounts(userId);
 
   // Status/favorite counts (per selected type) for the filter pills
-  const statsPromise = fetchAllRows<{ status: WatchStatus; favorite: boolean }>(
-    (from, to) => {
-      let query = supabase
-        .from("library_items")
-        .select("status, favorite, id")
-        .eq("user_id", userId);
-      if (type === "movie" || type === "tv") query = query.eq("media_type", type);
-      return query.order("id").range(from, to);
-    }
-  );
+  const statsPromise = collection
+    .find(typeFilter)
+    .project<{ status: WatchStatus; favorite: boolean }>({
+      status: 1,
+      favorite: 1,
+      _id: 0,
+    })
+    .toArray();
 
   const [items, watchedCounts, stats] = await Promise.all([
     itemsPromise,

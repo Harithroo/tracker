@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { requireUser } from "@/lib/firebase/admin";
+import { episodeWatches } from "@/lib/mongo/client";
 import { getSeason, getShow } from "@/lib/tmdb/client";
 import { isAired, yearOf } from "@/lib/utils";
 import type { MediaSnapshot } from "@/types/library";
@@ -16,20 +17,15 @@ export default async function SeasonPage({
   const seasonNum = Number(seasonNumber);
   if (!Number.isInteger(showId) || !Number.isInteger(seasonNum)) notFound();
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { id: userId } = await requireUser();
 
-  const [show, season, watchedResult] = await Promise.all([
+  const [show, season, watchedRows] = await Promise.all([
     getShow(showId).catch(() => null),
     getSeason(showId, seasonNum).catch(() => null),
-    supabase
-      .from("episode_watches")
-      .select("episode_number")
-      .eq("user_id", user!.id)
-      .eq("tmdb_show_id", showId)
-      .eq("season_number", seasonNum),
+    (await episodeWatches())
+      .find({ user_id: userId, tmdb_show_id: showId, season_number: seasonNum })
+      .project<{ episode_number: number }>({ episode_number: 1, _id: 0 })
+      .toArray(),
   ]);
   if (!show || !season) notFound();
 
@@ -50,9 +46,7 @@ export default async function SeasonPage({
     aired: isAired(ep.air_date),
   }));
 
-  const watchedEpisodes = (watchedResult.data ?? []).map(
-    (row) => row.episode_number
-  );
+  const watchedEpisodes = watchedRows.map((row) => row.episode_number);
 
   // Prev/next season navigation
   const orderedSeasons = show.seasons

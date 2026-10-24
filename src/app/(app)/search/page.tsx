@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import { createClient } from "@/lib/supabase/server";
+import { requireUser } from "@/lib/firebase/admin";
+import { libraryItems } from "@/lib/mongo/client";
 import { getTrending, searchMulti } from "@/lib/tmdb/client";
 import { cn, yearOf } from "@/lib/utils";
 import type { TmdbSearchResult } from "@/lib/tmdb/types";
@@ -60,19 +61,17 @@ export default async function SearchPage({
   // Library status for indicators + quick menus
   const libraryStatus = new Map<string, WatchStatus>();
   if (results.length > 0) {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    const { data: rows } = await supabase
-      .from("library_items")
-      .select("tmdb_id, media_type, status")
-      .eq("user_id", user!.id)
-      .in(
-        "tmdb_id",
-        results.map((r) => r.id)
-      );
-    for (const row of rows ?? []) {
+    const { id: userId } = await requireUser();
+    const rows = await (await libraryItems())
+      .find({ user_id: userId, tmdb_id: { $in: results.map((r) => r.id) } })
+      .project<{ tmdb_id: number; media_type: "movie" | "tv"; status: WatchStatus }>({
+        tmdb_id: 1,
+        media_type: 1,
+        status: 1,
+        _id: 0,
+      })
+      .toArray();
+    for (const row of rows) {
       libraryStatus.set(`${row.media_type}:${row.tmdb_id}`, row.status);
     }
   }

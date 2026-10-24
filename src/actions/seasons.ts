@@ -1,6 +1,6 @@
 "use server";
 
-import { createClient } from "@/lib/supabase/server";
+import { requireUser } from "@/lib/firebase/admin";
 import { getSeason } from "@/lib/tmdb/client";
 import { isAired } from "@/lib/utils";
 import type { EpisodeRow } from "@/components/library/EpisodeList";
@@ -13,11 +13,7 @@ export async function getSeasonEpisodes(
   showTmdbId: number,
   seasonNumber: number
 ): Promise<EpisodeRow[]> {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) throw new Error("Not signed in");
+  await requireUser();
 
   const season = await getSeason(showTmdbId, seasonNumber);
   return season.episodes.map((ep) => ({

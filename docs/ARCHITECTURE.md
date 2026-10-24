@@ -1,26 +1,27 @@
 # TV Time Alternative — Architecture
 
-Personal movie & TV tracker. Next.js (App Router) + TypeScript + Tailwind + Supabase + TMDB, deployed on Vercel. Free tiers throughout.
+Personal movie & TV tracker. Next.js (App Router) + TypeScript + Tailwind + MongoDB + Firebase Auth + TMDB, deployed on Vercel. Free tiers throughout.
 
 ## 1. Overall Architecture
 
 Next.js is the only backend — no custom API server.
 
 ```
-Browser
+Browser ──► Firebase Auth (sign-in, ID token)
   │
   ▼
 Next.js (Vercel)
-  ├─ Server Components ──► TMDB API        (metadata reads, cached)
-  ├─ Server Components ──► Supabase (RLS)  (user data reads)
-  ├─ Server Actions ─────► Supabase (RLS)  (user data writes)
-  └─ Middleware ─────────► Supabase Auth   (session refresh)
+  ├─ Server Components ──► TMDB API      (metadata reads, cached)
+  ├─ Server Components ──► MongoDB       (user data reads)
+  ├─ Server Actions ─────► MongoDB       (user data writes)
+  ├─ /api/auth/session ──► Firebase Admin (ID token → session cookie)
+  └─ proxy.ts ───────────► cookie presence only (optimistic gate)
 ```
 
 Rules:
 
 1. **TMDB is only called from the server.** The token never reaches the browser. Next.js fetch cache makes repeated lookups nearly free.
-2. **Supabase is accessed directly — no API layer.** Reads in Server Components, writes in Server Actions. Row Level Security is the authorization layer.
+2. **MongoDB is accessed directly — no API layer.** Reads in Server Components, writes in Server Actions. There is no database-side authorization: the driver connects as one application user, so **every query must filter on `user_id`**. That rule replaces what Row Level Security used to enforce, and nothing else enforces it.
 3. **Pages compose the two sources** — TMDB metadata + user's library row, fetched in parallel, merged at render time.
 
 ## 2. Folder Structure
@@ -38,8 +39,8 @@ src/
 │   │   ├── library/            # ?status= filter via searchParams
 │   │   ├── stats/
 │   │   └── settings/
-│   ├── auth/callback/route.ts  # Supabase code exchange
-│   ├── auth/confirm/route.ts   # email confirm / recovery
+│   ├── api/auth/session/      # ID token → session cookie
+│   ├── api/import/, api/export/
 │   ├── layout.tsx
 │   └── globals.css
 ├── components/
@@ -49,98 +50,73 @@ src/
 │   └── layout/                 # Navbar, MobileNav, ThemeProvider...
 ├── lib/
 │   ├── tmdb/                   # client.ts (server-only), types.ts, images.ts
-│   ├── supabase/               # server.ts, client.ts, middleware.ts
+│   ├── mongo/                  # client.ts (collections), collections.ts (docs), watches.ts
+│   ├── firebase/               # admin.ts (server), client.ts (browser), session.ts
 │   └── utils.ts
 ├── actions/                    # Server Actions: library.ts, episodes.ts, auth.ts
 ├── types/                      # domain types
-└── middleware.ts
-supabase/migrations/            # SQL migrations, version-controlled
+└── proxy.ts
+scripts/init-db.mjs             # creates the indexes (npm run db:init)
 ```
 
-Server Actions are thin: validate input → write to Supabase → `revalidatePath`. No service layer or repositories.
+Server Actions are thin: validate input → write to MongoDB → `revalidatePath`. No service layer or repositories.
 
 ## 3. Database Schema
 
 **Design decision:** store no TMDB *details* (cast, overview, trailers — always fetched live), but keep a small denormalized **snapshot** per library row (`title`, `poster_path`, `release_year`, `runtime_minutes`, `genre_ids`). Rationale:
 
-- Library pages render from one Postgres query instead of N TMDB requests.
-- Stats (watch time, favorite genres) are SQL aggregates over stored runtimes/genres.
+- Library pages render from one MongoDB query instead of N TMDB requests.
+- Stats (watch time, favorite genres) are computed from the stored runtimes/genres.
 
 The snapshot is a refreshable cache, not a source of truth.
 
-**Design decision:** one shared `watch_status` enum for both media types. Movies use the subset `completed` (UI label "Watched"), `plan_to_watch`, `dropped`. Separate movie statuses would double enum handling for no data-model benefit.
+**Design decision:** one shared `status` vocabulary for both media types. Movies use the subset `completed` (UI label "Watched"), `plan_to_watch`, `dropped`. Separate movie statuses would double the status handling for no data-model benefit.
 
-```sql
-create type media_type   as enum ('movie', 'tv');
-create type watch_status as enum ('watching', 'completed', 'plan_to_watch', 'on_hold', 'dropped');
+```ts
+// profiles — one per account, _id is the Firebase uid
+{ _id: "uid", username, avatar_url, email, created_at }
 
--- Mirrors auth.users; created by trigger on signup
-create table profiles (
-  id         uuid primary key references auth.users(id) on delete cascade,
-  username   text unique,
-  avatar_url text,
-  created_at timestamptz not null default now()
-);
+// library_items — one per (user, movie-or-show)
+{ _id: ObjectId, user_id, tmdb_id, media_type: "movie"|"tv",
+  status: "watching"|"completed"|"plan_to_watch"|"on_hold"|"dropped",
+  rating, favorite, notes, started_at, finished_at,
+  // TMDB snapshot (performance cache, refreshable)
+  title, poster_path, release_year, runtime_minutes,
+  genre_ids: number[], total_episodes,      // total_episodes: tv only
+  created_at, updated_at }
 
--- One row per (user, movie-or-show)
-create table library_items (
-  id              uuid primary key default gen_random_uuid(),
-  user_id         uuid not null references profiles(id) on delete cascade,
-  tmdb_id         integer not null,
-  media_type      media_type not null,
-  status          watch_status not null,
-  rating          smallint check (rating between 1 and 10),
-  favorite        boolean not null default false,
-  notes           text,
-  started_at      date,
-  finished_at     date,
-  -- TMDB snapshot (performance cache, refreshable)
-  title           text not null,
-  poster_path     text,
-  release_year    smallint,
-  runtime_minutes integer,      -- movies only
-  genre_ids       smallint[],   -- names resolved from static map
-  total_episodes  integer,      -- tv only; refreshed on show view
-  created_at      timestamptz not null default now(),
-  updated_at      timestamptz not null default now(),
-  unique (user_id, tmdb_id, media_type)
-);
-
-create index library_items_user_status_idx   on library_items (user_id, status);
-create index library_items_user_favorite_idx on library_items (user_id) where favorite;
-
--- One row per episode watched; everything else derived
-create table episode_watches (
-  id              uuid primary key default gen_random_uuid(),
-  user_id         uuid not null references profiles(id) on delete cascade,
-  tmdb_show_id    integer not null,
-  season_number   smallint not null,
-  episode_number  smallint not null,
-  runtime_minutes integer,      -- snapshot for watch-time stats
-  watched_at      timestamptz not null default now(),
-  unique (user_id, tmdb_show_id, season_number, episode_number)
-);
-
-create index episode_watches_user_show_idx on episode_watches (user_id, tmdb_show_id);
-create index episode_watches_user_date_idx on episode_watches (user_id, watched_at);
+// episode_watches — one per episode watched; everything else derived
+{ _id: ObjectId, user_id, tmdb_show_id, season_number, episode_number,
+  runtime_minutes, watched_at }
 ```
 
-All tables: RLS enabled, four policies each (`user_id = auth.uid()`), plus a signup trigger creating the `profiles` row.
+Indexes (`scripts/init-db.mjs`):
 
-**Derived, never stored:** current episode (max watched), completion % (count / total_episodes), next episode (computed vs TMDB season data), all statistics (SQL aggregates), built-in lists (filtered views of `library_items`).
+| Collection | Index | Why |
+|---|---|---|
+| `library_items` | `{user_id, tmdb_id, media_type}` **unique** | one row per title; the upsert guard |
+| `library_items` | `{user_id, status}`, `{user_id, favorite}`, `{user_id, updated_at}`, `{user_id, media_type, finished_at}` | library filters, Continue Watching, history |
+| `episode_watches` | `{user_id, tmdb_show_id, season_number, episode_number}` **unique** | makes "mark watched" idempotent |
+| `episode_watches` | `{user_id, watched_at}` | recent history, week summary |
 
-**Accepted MVP limitation:** movies model a single watch (rewatch = update `finished_at`). A `movie_watches` table can be added later without rework.
+**Design decision:** timestamps are ISO-8601 **strings**, not BSON dates (`started_at`/`finished_at` as `YYYY-MM-DD`). Every query over them is a sort or a range, which strings do correctly, and one representation then runs from the collection through the page to the export file unchanged.
+
+**Design decision:** the per-show watch count was a SQL view; it is now one `$group` aggregation in `lib/library/watch-counts.ts`, which also drops specials inside the pipeline (TMDB's `number_of_episodes` excludes them, so counting them read as "1112 / 1108").
+
+**Derived, never stored:** current episode (max watched), completion % (count / total_episodes), next episode (computed vs TMDB season data), all statistics, built-in lists (filtered views of `library_items`).
+
+**Accepted MVP limitation:** movies model a single watch (rewatch = update `finished_at`). A `movie_watches` collection can be added later without rework.
 
 ## 4. Authentication Flow
 
-Supabase Auth with `@supabase/ssr` (cookie sessions; auth-helpers is deprecated).
+Firebase Auth, with the session exchanged for an httpOnly cookie.
 
-- Signup → email confirm link → `/auth/confirm` → session. Trigger creates `profiles` row.
-- Login/logout via Server Actions.
-- `middleware.ts` refreshes tokens on every request (required for the SSR setup).
-- `(app)` layout gates with `supabase.auth.getUser()` (not `getSession()` — must validate server-side), redirects to `/login`.
-- Password reset: request email → recovery link → `/auth/confirm` → update-password form.
-- OAuth later is config-only.
+- The browser SDK signs in (email/password or Google popup) — it is the only thing that can mint an ID token. `components/auth/EmailAuthForm.tsx` posts that token to `/api/auth/session`, which verifies it, creates a 14-day Firebase session cookie, and upserts the `profiles` document (so Google accounts get one too, with no signup trigger).
+- Email/password accounts must confirm their address: `/api/auth/session` refuses a `password` sign-in whose `email_verified` is false. Google has already verified it.
+- Server-side, `lib/firebase/admin.ts#getCurrentUser()` verifies the cookie. Revocation isn't checked — that would cost a round trip per request — so sign-out clears the cookie *and* revokes refresh tokens.
+- `proxy.ts` only checks that the cookie **exists**. It runs on every request including prefetches, and Next's docs are explicit that it isn't a session-management layer; the real check happens in the `(app)` layout and in every action.
+- Password resets and confirmation emails are sent and handled by Firebase's own hosted pages, so there are no `/auth/*` routes and no mail provider.
+- Changing a password while signed in goes through a Server Action using the Admin SDK.
 
 ## 5. TMDB Integration
 
@@ -161,7 +137,8 @@ Supabase Auth with `@supabase/ssr` (cookie sessions; auth-helpers is deprecated)
 | `/library?status=` | Library filtered by status/favorites |
 | `/stats` | Statistics dashboard |
 | `/settings` | Profile, password |
-| `/login`, `/signup`, `/reset-password`, `/auth/*` | Auth |
+| `/login`, `/signup`, `/reset-password` | Auth (sign-in happens in the browser) |
+| `/api/auth/session` | ID token → session cookie (POST), sign-out (DELETE) |
 
 Filters live in the URL, not client state.
 
@@ -180,14 +157,14 @@ TanStack Query can be added surgically later if client interactivity grows.
 
 | Feature | Approach |
 |---|---|
-| Custom lists | `lists` + `list_items` tables |
-| Reviews | `reviews` table (public/spoiler flags), public-read RLS policy |
-| Friends | `follows` table; public profiles |
-| Activity feed | Query over friends' timestamped rows; Supabase Realtime optional |
-| Notifications | `pg_cron` checks TMDB for new episodes; `notifications` table; Resend for email |
+| Custom lists | `lists` + `list_items` collections |
+| Reviews | `reviews` collection (public/spoiler flags) |
+| Friends | `follows` collection; public profiles |
+| Activity feed | Query over friends' timestamped rows; change streams optional |
+| Notifications | A cron route checks TMDB for new episodes; `notifications` collection; Resend for email |
 | Calendar | TMDB air dates for shows with status `watching` |
 | Recommendations | TMDB `/recommendations` filtered against library |
-| Mobile app | Expo against the same Supabase project (RLS already mobile-ready); or responsive PWA |
+| Mobile app | Expo against the same Firebase project, talking to route handlers; or responsive PWA |
 
 ## Import / Export
 
@@ -200,19 +177,19 @@ Settings offers data portability (`src/lib/import/`, `/api/import`, `/api/export
   zip (TVDB ids for shows, name+year search for movies), tracker backup JSON
   (round-trips `/api/export`). Liberator pending a sample file.
 - **Import executes in chunks**: the client POSTs batches to `/api/import` (auth via
-  session cookie, RLS enforced), which resolves each item against TMDB
+  session cookie), which resolves each item against TMDB
   (id → /find → search fallback), fetches snapshot data and per-season episode
-  runtimes, and upserts with `on conflict do nothing`. Modes: merge (default) or
+  runtimes, and inserts only episodes not already recorded (the unique index). Modes: merge (default) or
   replace (wipes the user's rows first via `op: "reset"`).
 - **Export** (`/api/export`) downloads the full library + watch history as
   `tracker-backup@1` JSON — itself an accepted import source, so it doubles as backup.
 
 ## Build Phases
 
-1. Scaffold — Next.js + TS + Tailwind, Supabase project, env, base layout & dark theme
+1. Scaffold — Next.js + TS + Tailwind, Atlas cluster + Firebase project, env, base layout & dark theme
 2. Auth — full flow
 3. TMDB + Discover — client wrapper, search, details pages (read-only)
-4. Library — migration, add/status/rating/favorite actions, library page
+4. Library — indexes, add/status/rating/favorite actions, library page
 5. Episode tracking — season pages, checklist, progress
 6. Dashboard + Stats
 7. Polish — skeletons, empty states, mobile nav, error boundaries

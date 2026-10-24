@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/server";
-import { fetchAllRows } from "@/lib/supabase/fetch-all";
+import { requireUser } from "@/lib/firebase/admin";
+import { episodeWatches, libraryItems } from "@/lib/mongo/client";
+import { withId } from "@/lib/mongo/collections";
 import { getSeason, getShow, getTrending } from "@/lib/tmdb/client";
 import { getWeekSummary } from "@/lib/activity";
 import { getShowWatchCounts } from "@/lib/library/watch-counts";
@@ -24,27 +25,24 @@ interface UpNextInfo extends HeroUpNext {
 }
 
 export default async function HomePage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  const userId = user!.id;
+  const { id: userId } = await requireUser();
+  const items = await libraryItems();
+  const watches = await episodeWatches();
 
-  const { data: watchingData } = await supabase
-    .from("library_items")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("status", "watching")
-    .order("updated_at", { ascending: false })
-    .limit(100);
-  const allWatching = (watchingData ?? []) as LibraryItem[];
+  const allWatching: LibraryItem[] = (
+    await items
+      .find({ user_id: userId, status: "watching" })
+      .sort({ updated_at: -1 })
+      .limit(100)
+      .toArray()
+  ).map(withId);
 
   // Rank by actual watch recency (aggregated view), and only surface shows
   // touched in the last two months — stale ones stay in the library.
   const tvIds = allWatching.filter((i) => i.media_type === "tv").map((i) => i.tmdb_id);
   const watchedCounts = new Map<number, number>();
   const lastWatched = new Map<number, string>();
-  for (const [showId, count] of await getShowWatchCounts(supabase, userId, tvIds)) {
+  for (const [showId, count] of await getShowWatchCounts(userId, tvIds)) {
     watchedCounts.set(showId, count.watchedCount);
     if (count.lastWatchedAt) lastWatched.set(showId, count.lastWatchedAt);
   }
@@ -70,15 +68,14 @@ export default async function HomePage() {
       try {
         const [show, epRows] = await Promise.all([
           getShow(item.tmdb_id),
-          fetchAllRows<{ season_number: number; episode_number: number }>((from, to) =>
-            supabase
-              .from("episode_watches")
-              .select("season_number, episode_number")
-              .eq("user_id", userId)
-              .eq("tmdb_show_id", item.tmdb_id)
-              .order("id")
-              .range(from, to)
-          ),
+          watches
+            .find({ user_id: userId, tmdb_show_id: item.tmdb_id })
+            .project<{ season_number: number; episode_number: number }>({
+              season_number: 1,
+              episode_number: 1,
+              _id: 0,
+            })
+            .toArray(),
         ]);
         const watched = new Set(
           epRows.map((row) => episodeKey(row.season_number, row.episode_number))
@@ -127,7 +124,7 @@ export default async function HomePage() {
   const watching = candidates.filter((i) => hasAiredNext.has(i.tmdb_id)).slice(0, 12);
   const [hero, ...rest] = watching;
 
-  const weekSummary = await getWeekSummary(supabase, userId);
+  const weekSummary = await getWeekSummary(userId);
 
   let trendingTv: TmdbSearchResult[] = [];
   let trendingMovies: TmdbSearchResult[] = [];
@@ -145,12 +142,16 @@ export default async function HomePage() {
   const libraryStatus = new Map<string, WatchStatus>();
   const trendingIds = [...trendingTv, ...trendingMovies].map((t) => t.id);
   if (trendingIds.length > 0) {
-    const { data: rows } = await supabase
-      .from("library_items")
-      .select("tmdb_id, media_type, status")
-      .eq("user_id", userId)
-      .in("tmdb_id", trendingIds);
-    for (const row of rows ?? []) {
+    const rows = await items
+      .find({ user_id: userId, tmdb_id: { $in: trendingIds } })
+      .project<{ tmdb_id: number; media_type: "movie" | "tv"; status: WatchStatus }>({
+        tmdb_id: 1,
+        media_type: 1,
+        status: 1,
+        _id: 0,
+      })
+      .toArray();
+    for (const row of rows) {
       libraryStatus.set(`${row.media_type}:${row.tmdb_id}`, row.status);
     }
   }

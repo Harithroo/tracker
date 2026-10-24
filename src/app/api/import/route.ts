@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
-import { createClient } from "@/lib/supabase/server";
+import { getCurrentUser } from "@/lib/firebase/admin";
+import { episodeWatches, libraryItems } from "@/lib/mongo/client";
+import { addEpisodeWatches } from "@/lib/mongo/watches";
 import { buildEpisodeIndex, mapToTmdbEpisode } from "@/lib/tmdb/episode-map";
 import type { SeasonDetails } from "@/lib/tmdb/types";
 import type { ImportItem, ImportItemResult, MovieImportItem, ShowImportItem } from "@/lib/import/types";
@@ -72,10 +74,7 @@ const dateOf = (ts: string | null | undefined) => (ts ? ts.slice(0, 10) : null);
 const clampRating = (r: number | null | undefined) =>
   typeof r === "number" && r >= 1 && r <= 10 ? Math.round(r) : null;
 
-type Supabase = Awaited<ReturnType<typeof createClient>>;
-
 async function importMovie(
-  supabase: Supabase,
   userId: string,
   item: MovieImportItem
 ): Promise<ImportItemResult> {
@@ -83,13 +82,12 @@ async function importMovie(
   const tmdbId = await resolveMovieId(item);
   if (!tmdbId) return { ...base, status: "unmatched", detail: "No TMDB match" };
 
-  const { data: existing } = await supabase
-    .from("library_items")
-    .select("id")
-    .eq("user_id", userId)
-    .eq("tmdb_id", tmdbId)
-    .eq("media_type", "movie")
-    .maybeSingle();
+  const items = await libraryItems();
+  const existing = await items.findOne({
+    user_id: userId,
+    tmdb_id: tmdbId,
+    media_type: "movie",
+  });
   if (existing) return { ...base, status: "skipped", detail: "Already in library" };
 
   const details = await tmdb<{
@@ -100,25 +98,30 @@ async function importMovie(
     genres: { id: number }[];
   }>(`/movie/${tmdbId}`).catch(() => null);
 
-  const { error } = await supabase.from("library_items").insert({
+  const now = new Date().toISOString();
+  await items.insertOne({
     user_id: userId,
     tmdb_id: tmdbId,
     media_type: "movie",
     status: item.watchedAt ? "completed" : "plan_to_watch",
     rating: clampRating(item.rating),
+    favorite: false,
+    notes: null,
+    started_at: null,
     finished_at: dateOf(item.watchedAt),
     title: details?.title ?? item.title,
     poster_path: details?.poster_path ?? null,
     release_year: Number((details?.release_date ?? "").slice(0, 4)) || item.year || null,
     runtime_minutes: details?.runtime ?? null,
     genre_ids: details?.genres?.map((g) => g.id) ?? [],
+    total_episodes: null,
+    created_at: now,
+    updated_at: now,
   });
-  if (error) return { ...base, status: "error", detail: error.message };
   return base;
 }
 
 async function importShow(
-  supabase: Supabase,
   userId: string,
   item: ShowImportItem
 ): Promise<ImportItemResult> {
@@ -194,36 +197,23 @@ async function importShow(
     });
   }
 
-  let episodesImported = 0;
-  if (mapped.size > 0) {
-    const rows = [...mapped.values()].map((ep) => ({
+  const episodesImported = await addEpisodeWatches(
+    [...mapped.values()].map((ep) => ({
       user_id: userId,
       tmdb_show_id: tmdbId,
       season_number: ep.season,
       episode_number: ep.episode,
       runtime_minutes: ep.runtime,
       watched_at: ep.watchedAt,
-    }));
-    for (let i = 0; i < rows.length; i += 500) {
-      const { data, error } = await supabase
-        .from("episode_watches")
-        .upsert(rows.slice(i, i + 500), {
-          onConflict: "user_id,tmdb_show_id,season_number,episode_number",
-          ignoreDuplicates: true,
-        })
-        .select("id");
-      if (error) return { ...base, status: "error", detail: error.message };
-      episodesImported += data?.length ?? 0;
-    }
-  }
+    }))
+  );
 
-  const { data: existing } = await supabase
-    .from("library_items")
-    .select("id")
-    .eq("user_id", userId)
-    .eq("tmdb_id", tmdbId)
-    .eq("media_type", "tv")
-    .maybeSingle();
+  const items = await libraryItems();
+  const existing = await items.findOne({
+    user_id: userId,
+    tmdb_id: tmdbId,
+    media_type: "tv",
+  });
   if (existing) {
     return { ...base, status: episodesImported > 0 ? "merged" : "skipped", episodesImported };
   }
@@ -239,12 +229,15 @@ async function importShow(
         ? "watching"
         : "plan_to_watch";
 
-  const { error } = await supabase.from("library_items").insert({
+  const now = new Date().toISOString();
+  await items.insertOne({
     user_id: userId,
     tmdb_id: tmdbId,
     media_type: "tv",
     status,
     rating: clampRating(item.rating),
+    favorite: false,
+    notes: null,
     started_at: dateOf(dates[0]),
     finished_at: status === "completed" ? dateOf(dates[dates.length - 1]) : null,
     title: details?.name ?? item.title,
@@ -253,16 +246,14 @@ async function importShow(
     runtime_minutes: fallbackRuntime,
     genre_ids: details?.genres?.map((g) => g.id) ?? [],
     total_episodes: totalEpisodes,
+    created_at: now,
+    updated_at: now,
   });
-  if (error) return { ...base, status: "error", detail: error.message };
   return { ...base, episodesImported };
 }
 
 export async function POST(request: Request) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
 
   let body: { op?: string; items?: ImportItem[] };
@@ -273,10 +264,15 @@ export async function POST(request: Request) {
   }
 
   if (body.op === "reset") {
-    const del1 = await supabase.from("episode_watches").delete().eq("user_id", user.id);
-    const del2 = await supabase.from("library_items").delete().eq("user_id", user.id);
-    const error = del1.error ?? del2.error;
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    try {
+      await (await episodeWatches()).deleteMany({ user_id: user.id });
+      await (await libraryItems()).deleteMany({ user_id: user.id });
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "Reset failed" },
+        { status: 500 }
+      );
+    }
     revalidatePath("/", "layout");
     return NextResponse.json({ ok: true });
   }
@@ -293,8 +289,8 @@ export async function POST(request: Request) {
         const index = cursor++;
         const item = items[index];
         try {
-          if (item.kind === "movie") results[index] = await importMovie(supabase, user.id, item);
-          else if (item.kind === "show") results[index] = await importShow(supabase, user.id, item);
+          if (item.kind === "movie") results[index] = await importMovie(user.id, item);
+          else if (item.kind === "show") results[index] = await importShow(user.id, item);
           else results[index] = { kind: "movie", title: "(unknown)", status: "error", detail: "Bad item kind" };
         } catch (err) {
           results[index] = {
