@@ -50,26 +50,35 @@ function readableError(err: unknown): string {
  * an ID token. The server turns that token into the httpOnly session cookie
  * every server-side auth check reads.
  */
-async function startSession(user: User): Promise<void> {
+async function startSession(
+  user: User
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  // A token minted before the address was confirmed still says unverified, so
+  // force a refresh — otherwise clicking the email link appears to do nothing.
   const res = await fetch("/api/auth/session", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ idToken: await user.getIdToken() }),
+    body: JSON.stringify({ idToken: await user.getIdToken(true) }),
   });
-  if (!res.ok) {
-    await signOut(firebaseAuth()).catch(() => {});
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error ?? "Couldn't start a session.");
-  }
+  if (res.ok) return { ok: true };
+
+  const body = await res.json().catch(() => ({}));
+  return {
+    ok: false,
+    status: res.status,
+    error: body.error ?? "Couldn't start a session.",
+  };
 }
 
 export function EmailAuthForm({ mode }: { mode: AuthMode }) {
   const router = useRouter();
-  const [pending, setPending] = useState<"form" | "google" | null>(null);
+  const [pending, setPending] = useState<"form" | "google" | "resend" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  /** Set when login was refused only because the address isn't confirmed. */
+  const [unverified, setUnverified] = useState<User | null>(null);
 
-  function begin(which: "form" | "google") {
+  function begin(which: "form" | "google" | "resend") {
     setPending(which);
     setError(null);
     setMessage(null);
@@ -103,15 +112,26 @@ export function EmailAuthForm({ mode }: { mode: AuthMode }) {
         }
         const { user } = await createUserWithEmailAndPassword(auth, email, password);
         await sendEmailVerification(user);
-        // No session until the address is confirmed, matching the login gate.
-        await signOut(auth);
+        // No session until the address is confirmed, matching the login gate;
+        // the user is kept so the link can be resent if it doesn't arrive.
+        setUnverified(user);
         setMessage("Check your email for a confirmation link.");
         setPending(null);
         return;
       }
 
       const { user } = await signInWithEmailAndPassword(auth, email, password);
-      await startSession(user);
+      const session = await startSession(user);
+      if (!session.ok) {
+        // 403 is the unconfirmed-address gate. Keep the Firebase session (it
+        // grants nothing without the cookie) so the email can be resent — the
+        // alternative is an account with no way out but a new address.
+        if (session.status === 403) setUnverified(user);
+        else await signOut(auth).catch(() => {});
+        setError(session.error);
+        setPending(null);
+        return;
+      }
       router.replace("/");
       router.refresh();
     } catch (err) {
@@ -119,11 +139,30 @@ export function EmailAuthForm({ mode }: { mode: AuthMode }) {
     }
   }
 
+  async function handleResend() {
+    if (!unverified) return;
+    begin("resend");
+    try {
+      await sendEmailVerification(unverified);
+      setMessage("Sent. Open the link, then log in again.");
+    } catch (err) {
+      fail(err);
+      return;
+    }
+    setPending(null);
+  }
+
   async function handleGoogle() {
     begin("google");
     try {
       const { user } = await signInWithPopup(firebaseAuth(), googleProvider);
-      await startSession(user);
+      const session = await startSession(user);
+      if (!session.ok) {
+        await signOut(firebaseAuth()).catch(() => {});
+        setError(session.error);
+        setPending(null);
+        return;
+      }
       router.replace("/");
       router.refresh();
     } catch (err) {
@@ -154,6 +193,16 @@ export function EmailAuthForm({ mode }: { mode: AuthMode }) {
           <p className="rounded-lg border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-300">
             {error}
           </p>
+        )}
+        {unverified && (
+          <button
+            type="button"
+            onClick={handleResend}
+            disabled={pending !== null}
+            className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm font-medium transition-colors hover:border-accent disabled:opacity-50"
+          >
+            {pending === "resend" ? "Sending…" : "Resend confirmation email"}
+          </button>
         )}
         {message && (
           <p className="rounded-lg border border-emerald-900 bg-emerald-950/50 px-3 py-2 text-sm text-emerald-300">
