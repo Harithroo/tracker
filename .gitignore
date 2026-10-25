@@ -51,3 +51,4 @@ tvtime-import/
 # personal export data
 other exports/
 tracker-*.json
+atlas-*.env
